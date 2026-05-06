@@ -39,8 +39,9 @@ const [metadataPDA] = anchor.web3.PublicKey.findProgramAddressSync(
 );
 
 // Parse optional --uri flag from argv
+const uriIdx = process.argv.indexOf("--uri");
 const uriArg = process.argv.find((a) => a.startsWith("--uri="))?.split("=")[1]
-  ?? process.argv[process.argv.indexOf("--uri") + 1];
+  ?? (uriIdx >= 0 ? process.argv[uriIdx + 1] : undefined);
 
 const NAME   = "Terminus Coin";
 const SYMBOL = "TERM";

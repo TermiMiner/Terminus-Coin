@@ -1,0 +1,30 @@
+{
+  "license": "ISC",
+  "scripts": {
+    "test": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-mocha -p tsconfig.json -t 120000 tests/**/*.ts",
+    "demo": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/pow_demo.ts",
+    "measure": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/measure_cu.ts",
+    "metadata": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/create_metadata.ts",
+    "vesting": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/initialize_vesting.ts",
+    "rate-limit": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/set_rate_limit.ts",
+    "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@noble/hashes": "^1.8.0",
+    "@solana/spl-token": "^0.4.14"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.0",
+    "@types/chai": "^4.3.0",
+    "@types/mocha": "^9.0.0",
+    "@types/node": "^25.6.0",
+    "chai": "^4.3.4",
+    "mocha": "^11.3.0",
+    "prettier": "^2.6.2",
+    "ts-mocha": "^10.0.0",
+    "ts-node": "^7.0.1",
+    "typescript": "^5.7.3"
+  }
+}

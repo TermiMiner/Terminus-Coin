@@ -1,0 +1,30 @@
+# Anchor / Solana build artifacts
+.anchor
+target/
+test-ledger/
+
+# Rust
+**/*.rs.bk
+
+# Editor backups
+*~
+*.save
+
+# Node
+node_modules/
+package-lock.json
+miner-ui/node_modules/
+miner-ui/dist/
+
+# Yarn
+.yarn/
+.pnp.*
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

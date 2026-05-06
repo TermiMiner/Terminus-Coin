@@ -1,0 +1,33 @@
+{
+  "name": "miner-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.0",
+    "@noble/hashes": "^1.7.2",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/wallet-adapter-backpack": "^0.1.14",
+    "@solana/wallet-adapter-base": "^0.9.23",
+    "@solana/wallet-adapter-phantom": "^0.9.24",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "@solana/wallet-adapter-react-ui": "^0.9.35",
+    "@solana/wallet-adapter-solflare": "^0.6.33",
+    "@solana/web3.js": "^1.98.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.11",
+    "vite-plugin-node-polyfills": "^0.22.0"
+  }
+}

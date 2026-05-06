@@ -1,0 +1,17 @@
+[toolchain]
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+terminuscoin = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+

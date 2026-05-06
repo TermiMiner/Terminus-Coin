@@ -1,0 +1,255 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0c0c0c;
+  --bg2: #111111;
+  --border: #1e1e1e;
+  --green: #00ff41;
+  --green-dim: #00aa2a;
+  --amber: #ffb000;
+  --red: #ff3333;
+  --grey: #555555;
+  --font: "JetBrains Mono", "Courier New", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--green);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 16px;
+  gap: 12px;
+}
+
+/* ── Header ────────────────────────────────────────────────────── */
+
+.header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--green);
+  letter-spacing: 0.08em;
+}
+
+.header-subtitle {
+  color: var(--grey);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* ── Wallet bar ────────────────────────────────────────────────── */
+
+.wallet-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.wallet-bar .wallet-adapter-button {
+  background: transparent !important;
+  border: 1px solid var(--green-dim) !important;
+  color: var(--green) !important;
+  font-family: var(--font) !important;
+  font-size: 12px !important;
+  padding: 4px 12px !important;
+  border-radius: 2px !important;
+  height: auto !important;
+  line-height: 1.6 !important;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.wallet-bar .wallet-adapter-button:hover {
+  border-color: var(--green) !important;
+  color: var(--green) !important;
+}
+
+.wallet-address {
+  color: var(--grey);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* ── Stats grid ────────────────────────────────────────────────── */
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.stat-box {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.stat-label {
+  color: var(--grey);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+
+.stat-value {
+  color: var(--green);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.stat-value.amber {
+  color: var(--amber);
+}
+
+.stat-value.red {
+  color: var(--red);
+}
+
+/* ── Controls ──────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.btn {
+  background: transparent;
+  border: 1px solid var(--green-dim);
+  color: var(--green);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 5px 16px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  letter-spacing: 0.05em;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--green);
+  background: rgba(0, 255, 65, 0.07);
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.btn.active {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.btn.active:hover:not(:disabled) {
+  background: rgba(255, 51, 51, 0.07);
+}
+
+.status-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+
+.status-pill.mining {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.status-pill.idle {
+  border-color: var(--grey);
+  color: var(--grey);
+}
+
+.status-pill.error {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* ── Log feed ──────────────────────────────────────────────────── */
+
+.log-pane {
+  flex: 1;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.log-line {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-line.info {
+  color: var(--green);
+}
+
+.log-line.dim {
+  color: var(--grey);
+}
+
+.log-line.warn {
+  color: var(--amber);
+}
+
+.log-line.error {
+  color: var(--red);
+}
+
+.log-line.success {
+  color: #00ff99;
+}
+
+/* ── Footer ────────────────────────────────────────────────────── */
+
+.footer {
+  color: var(--grey);
+  font-size: 10px;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+/* ── Phantom modal overrides ───────────────────────────────────── */
+
+.wallet-adapter-modal-wrapper {
+  background: var(--bg2) !important;
+  border: 1px solid var(--border) !important;
+  font-family: var(--font) !important;
+}
+
+.wallet-adapter-modal-title {
+  color: var(--green) !important;
+  font-family: var(--font) !important;
+}

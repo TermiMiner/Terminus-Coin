@@ -1,0 +1,18 @@
+[package]
+name = "terminuscoin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "terminuscoin"
+
+[dependencies]
+anchor-lang = { version = "0.32.0", features = ["init-if-needed"] }
+anchor-spl = { version = "0.32.0", features = ["spl-token-2022"] }
+mpl-token-metadata = "5"
+solana-keccak-hasher = "2.2.1"
+
+[features]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+init-if-needed = ["anchor-lang/init-if-needed"]

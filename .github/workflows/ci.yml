@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  rust-build:
+    name: Rust build (cargo build-sbf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+          components: rustfmt, clippy
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.3.0/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo build-sbf
+        run: cargo build-sbf
+
+      - name: Upload program binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminuscoin.so
+          path: target/deploy/terminuscoin.so
+          retention-days: 7
+
+  ts-typecheck:
+    name: TypeScript typecheck (miner-ui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: miner-ui/package-lock.json
+
+      - name: Install
+        working-directory: miner-ui
+        run: npm ci --legacy-peer-deps
+
+      - name: Typecheck
+        working-directory: miner-ui
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: miner-ui
+        run: npx vite build

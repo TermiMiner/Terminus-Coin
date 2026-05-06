@@ -1,0 +1,22 @@
+{
+  "name": "Terminus Coin",
+  "symbol": "TERM",
+  "description": "Terminus Coin is a proof-of-work SPL token on Solana. Miners burn keccak256 hashes to claim emissions; the network self-regulates via continuous-target difficulty adjustment. Hard cap of 1,000,000,000 TERM over a 50-year emissions schedule with halving every 5 years. Dynamic burn (0.25%–5%) scales with network heat. Anti-Sybil bond required to mine. Per-wallet two-step authority transfer; freeze authority can be permanently disabled.",
+  "image": "https://cdn.jsdelivr.net/gh/TermiMiner/terminus-coin@main/metadata/logo.jpg",
+  "external_url": "https://terminuscoin.xyz",
+  "properties": {
+    "files": [
+      {
+        "uri": "https://cdn.jsdelivr.net/gh/TermiMiner/terminus-coin@main/metadata/logo.jpg",
+        "type": "image/jpeg"
+      }
+    ],
+    "category": "image"
+  },
+  "extensions": {
+    "website": "https://terminuscoin.xyz",
+    "twitter": "",
+    "discord": "",
+    "github": "https://github.com/TermiMiner/terminus-coin"
+  }
+}

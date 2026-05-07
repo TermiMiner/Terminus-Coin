@@ -12,7 +12,7 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import "./terminal.css";
 import App from "./App";
 
-const RPC_URL = import.meta.env.VITE_RPC_URL ?? "http://127.0.0.1:8899";
+const RPC_URL = import.meta.env.VITE_RPC_URL ?? "https://api.devnet.solana.com";
 
 function Root() {
   const wallets = useMemo(

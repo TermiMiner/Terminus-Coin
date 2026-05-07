@@ -7,6 +7,7 @@
     "metadata": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/create_metadata.ts",
     "vesting": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/initialize_vesting.ts",
     "rate-limit": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/set_rate_limit.ts",
+    "sync-idl": "cp target/idl/terminuscoin.json miner-ui/idl/terminuscoin.json && echo 'IDL synced to miner-ui/idl/'",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },

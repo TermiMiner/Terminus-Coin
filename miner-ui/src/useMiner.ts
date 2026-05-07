@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ComputeBudgetProgram, Connection, PublicKey, Transaction } from "@solana/web3.js";
-import { WalletContextState } from "@solana/wallet-adapter-react";
 import * as anchor from "@coral-xyz/anchor";
 import { Program, AnchorProvider, BN, Idl } from "@coral-xyz/anchor";
 import {
   createAssociatedTokenAccountIdempotentInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
-import idl from "../../target/idl/terminuscoin.json";
+import idl from "../idl/terminuscoin.json";
 import { PROGRAM_ID, GLOBAL_STATE_PDA, MINT_PDA, STAKE_POOL_PDA, deriveBondPDA } from "./useChainState";
 import type { MineRequest, MineResult } from "./miner.worker";
+import type { MinerWallet } from "./burnerWallet";
 
 export type MinerStatus = "idle" | "mining" | "submitting" | "error";
 
@@ -60,7 +60,7 @@ function backoffForError(err: any): number {
   return 0;
 }
 
-export function useMiner(connection: Connection | null, wallet: WalletContextState) {
+export function useMiner(connection: Connection | null, wallet: MinerWallet, relayer?: MinerWallet) {
   const [status, setStatus] = useState<MinerStatus>("idle");
   const [logs, setLogs] = useState<LogEntry[]>([
     mkLog("dim", `[${ts()}] Terminus Coin miner ready. Connect wallet to start.`),
@@ -184,10 +184,13 @@ export function useMiner(connection: Connection | null, wallet: WalletContextSta
             appendLog("dim", `[${ts()}] First mine — also depositing 0.001 SOL bond.`);
           }
 
+          // Pick fee payer: relayer if configured (gasless mining), else wallet itself.
+          const feePayerKey = relayer?.publicKey ?? wallet.publicKey!;
+
           const claimIx = await (program.methods as any)
             .claim(new BN(nonce))
             .accounts({
-              feePayer: wallet.publicKey,
+              feePayer: feePayerKey,
               mint: MINT_PDA,
               userTokenAccount: userAta,
               authority: wallet.publicKey,
@@ -204,7 +207,7 @@ export function useMiner(connection: Connection | null, wallet: WalletContextSta
 
           const tx = new Transaction({
             recentBlockhash: blockhash,
-            feePayer: wallet.publicKey!,
+            feePayer: feePayerKey,
           });
           if (depositBondIx) {
             tx.add(cuLimitIx, createAtaIx, depositBondIx, claimIx);
@@ -212,7 +215,11 @@ export function useMiner(connection: Connection | null, wallet: WalletContextSta
             tx.add(cuLimitIx, createAtaIx, claimIx);
           }
 
-          const signed = await wallet.signTransaction!(tx);
+          // Sign in order: authority first, then relayer (if any).
+          let signed = await wallet.signTransaction!(tx);
+          if (relayer?.publicKey && relayer.signTransaction) {
+            signed = await relayer.signTransaction(signed);
+          }
           const sig = await connection!.sendRawTransaction(signed.serialize());
           await connection!.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
 

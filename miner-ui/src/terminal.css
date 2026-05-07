@@ -42,8 +42,24 @@ body,
 /* ── Header ────────────────────────────────────────────────────── */
 
 .header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   border-bottom: 1px solid var(--border);
   padding-bottom: 10px;
+}
+
+.header-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.header-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .header-title {
@@ -91,6 +107,16 @@ body,
   color: var(--grey);
   font-size: 11px;
   word-break: break-all;
+}
+
+.burner-warning {
+  background: rgba(255, 176, 0, 0.08);
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  padding: 8px 12px;
+  font-size: 11px;
+  border-radius: 2px;
+  line-height: 1.5;
 }
 
 /* ── Stats grid ────────────────────────────────────────────────── */

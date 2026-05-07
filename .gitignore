@@ -10,6 +10,12 @@ test-ledger/
 *~
 *.save
 
+# Local environment overrides (keep .env.example, ignore .env)
+.env
+.env.local
+miner-ui/.env
+miner-ui/.env.local
+
 # Node
 node_modules/
 package-lock.json

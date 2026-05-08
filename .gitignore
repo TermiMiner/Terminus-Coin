@@ -18,9 +18,13 @@ miner-ui/.env.local
 
 # Node
 node_modules/
-package-lock.json
 miner-ui/node_modules/
 miner-ui/dist/
+
+# Root uses yarn (yarn.lock is committed); miner-ui uses npm so we want to
+# commit its package-lock.json for reproducible builds. Anchor only — leading
+# slash anchors to the repo root.
+/package-lock.json
 
 # Yarn
 .yarn/

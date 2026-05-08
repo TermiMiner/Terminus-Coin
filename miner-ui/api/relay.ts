@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { Transaction } from "@solana/web3.js";
-import { PROGRAM_ID, getRelayerKeypair, getConnection } from "./_relayer";
+import { Connection, Keypair, Transaction } from "@solana/web3.js";
 
 /**
  * POST /api/relay  { transaction: base64 }
@@ -8,13 +7,14 @@ import { PROGRAM_ID, getRelayerKeypair, getConnection } from "./_relayer";
  * adds the relayer's signature as fee_payer, and broadcasts.
  *
  * Anti-abuse: refuses to sign anything that contains instructions outside the
- * allowed program set. Effectively the relayer can ONLY pay fees for our
- * mining flow — not arbitrary Solana txs an attacker might construct.
+ * allowed program set. The relayer can ONLY pay fees for our mining flow —
+ * not arbitrary Solana txs an attacker might construct.
  */
 
-const TOKEN_PROGRAM            = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-const COMPUTE_BUDGET_PROGRAM   = "ComputeBudget111111111111111111111111111111";
+const PROGRAM_ID                = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y";
+const TOKEN_PROGRAM             = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const ASSOCIATED_TOKEN_PROGRAM  = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const COMPUTE_BUDGET_PROGRAM    = "ComputeBudget111111111111111111111111111111";
 
 const ALLOWED = new Set([
   PROGRAM_ID,
@@ -32,7 +32,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const relayer = getRelayerKeypair();
+    const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
+    const raw = process.env.RELAYER_SECRET_KEY;
+    if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
+    const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
 
     let tx: Transaction;
     try { tx = Transaction.from(Buffer.from(transaction, "base64")); }
@@ -54,7 +57,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Add relayer's signature (preserves the burner's signature already on the tx)
     tx.partialSign(relayer);
 
-    const conn = getConnection();
+    const conn = new Connection(rpc, "confirmed");
     const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
     return res.status(200).json({ signature: sig });
   } catch (err: any) {

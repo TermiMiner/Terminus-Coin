@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
-import { getRelayerKeypair, getConnection } from "./_relayer";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 
 const TOPUP_LAMPORTS = 15_000_000;        // 0.015 SOL
 const RECIPIENT_BALANCE_CAP = 8_000_000;  // refuse to top up if recipient has more than this
@@ -10,9 +9,7 @@ const RECIPIENT_BALANCE_CAP = 8_000_000;  // refuse to top up if recipient has m
  * Sends TOPUP_LAMPORTS from the shared relayer to a freshly generated burner
  * so it can pay for its bond + user_state rent on first claim.
  *
- * Anti-abuse: refuse to top up wallets that already have ≥ RECIPIENT_BALANCE_CAP
- * (so a script can't drain the relayer by repeatedly hitting this endpoint with
- * a single recipient).
+ * Anti-abuse: refuse to top up wallets that already have ≥ RECIPIENT_BALANCE_CAP.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
@@ -27,8 +24,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   catch { return res.status(400).json({ error: "invalid pubkey" }); }
 
   try {
-    const relayer = getRelayerKeypair();
-    const conn = getConnection();
+    const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
+    const raw = process.env.RELAYER_SECRET_KEY;
+    if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
+    const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
+    const conn = new Connection(rpc, "confirmed");
 
     const balance = await conn.getBalance(recipientKey);
     if (balance >= RECIPIENT_BALANCE_CAP) {

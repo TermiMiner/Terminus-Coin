@@ -10,6 +10,7 @@ import idl from "../idl/terminuscoin.json";
 import { PROGRAM_ID, GLOBAL_STATE_PDA, MINT_PDA, STAKE_POOL_PDA, deriveBondPDA } from "./useChainState";
 import type { MineRequest, MineResult } from "./miner.worker";
 import type { MinerWallet } from "./burnerWallet";
+import type { BroadcastAdapter } from "./relayerAdapter";
 
 export type MinerStatus = "idle" | "mining" | "submitting" | "error";
 
@@ -60,7 +61,7 @@ function backoffForError(err: any): number {
   return 0;
 }
 
-export function useMiner(connection: Connection | null, wallet: MinerWallet, relayer?: MinerWallet) {
+export function useMiner(connection: Connection | null, wallet: MinerWallet, broadcaster?: BroadcastAdapter) {
   const [status, setStatus] = useState<MinerStatus>("idle");
   const [logs, setLogs] = useState<LogEntry[]>([
     mkLog("dim", `[${ts()}] Terminus Coin miner ready. Connect wallet to start.`),
@@ -184,8 +185,8 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, rel
             appendLog("dim", `[${ts()}] First mine — also depositing 0.001 SOL bond.`);
           }
 
-          // Pick fee payer: relayer if configured (gasless mining), else wallet itself.
-          const feePayerKey = relayer?.publicKey ?? wallet.publicKey!;
+          // Pick fee payer: broadcaster if configured (gasless mining), else wallet itself.
+          const feePayerKey = broadcaster?.pubkey ?? wallet.publicKey!;
 
           const claimIx = await (program.methods as any)
             .claim(new BN(nonce))
@@ -215,12 +216,15 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, rel
             tx.add(cuLimitIx, createAtaIx, claimIx);
           }
 
-          // Sign in order: authority first, then relayer (if any).
-          let signed = await wallet.signTransaction!(tx);
-          if (relayer?.publicKey && relayer.signTransaction) {
-            signed = await relayer.signTransaction(signed);
+          // Authority signs first; broadcaster (local relayer or shared
+          // server-side relayer) completes signing + broadcast.
+          const partial = await wallet.signTransaction!(tx);
+          let sig: string;
+          if (broadcaster) {
+            sig = await broadcaster.signAndBroadcast(partial, connection!);
+          } else {
+            sig = await connection!.sendRawTransaction(partial.serialize());
           }
-          const sig = await connection!.sendRawTransaction(signed.serialize());
           await connection!.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
 
           appendLog("success", `[${ts()}] Claimed! tx=${sig.slice(0, 16)}…`);

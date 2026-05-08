@@ -9,6 +9,14 @@ import {
   RELAYER_STORAGE_KEY,
   type MinerWallet,
 } from "./burnerWallet";
+import {
+  type BroadcastAdapter,
+  fetchSharedRelayerInfo,
+  localRelayerAdapter,
+  sharedRelayerAdapter,
+  sharedTopUp,
+  type SharedRelayerInfo,
+} from "./relayerAdapter";
 import logoUrl from "./assets/logo.jpg";
 
 // First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
@@ -34,14 +42,28 @@ export default function App() {
   const phantom = useWallet();
   const { state: chain, loading, initialized } = useChainState(connection);
 
-  // Burner + relayer wallets (browser-localStorage keypairs). Devnet-only.
+  // Burner + (optional) local relayer wallets. Local relayer is for users
+  // running `npm run dev` against their own keypair. The deployed site uses
+  // a server-side shared relayer (see fetchSharedRelayerInfo).
   const burner = useMemo(() => new BrowserKeypairWallet(BURNER_STORAGE_KEY), []);
   const relayer = useMemo(() => new BrowserKeypairWallet(RELAYER_STORAGE_KEY), []);
   const [walletVersion, setWalletVersion] = useState(0);
   const refreshWallets = () => setWalletVersion((v) => v + 1);
   void walletVersion;
 
-  // Live SOL balances for burner + relayer (polled every 5s)
+  // Probe the deployment for a configured shared relayer.
+  const [shared, setShared] = useState<SharedRelayerInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchSharedRelayerInfo().then((info) => { if (!cancelled) setShared(info); });
+    // Re-poll the shared balance every 30s for transparency
+    const id = setInterval(() => {
+      fetchSharedRelayerInfo().then((info) => { if (!cancelled) setShared(info); });
+    }, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // Live SOL balances for burner + local relayer (polled every 5s)
   const [burnerBalance, setBurnerBalance] = useState<number | null>(null);
   const [relayerBalance, setRelayerBalance] = useState<number | null>(null);
   useEffect(() => {
@@ -63,23 +85,38 @@ export default function App() {
     ? { publicKey: phantom.publicKey, signTransaction: phantom.signTransaction }
     : burner;
   const isBurner = !phantom.publicKey && !!burner.publicKey;
-  const useRelayer = isBurner && !!relayer.publicKey;
+
+  // Choose broadcaster: shared (server) > local (browser) > none.
+  const broadcaster: BroadcastAdapter | undefined =
+    shared ? sharedRelayerAdapter(shared.pubkey)
+    : (isBurner ? localRelayerAdapter(relayer) ?? undefined : undefined);
+  const sharedActive = !!shared && isBurner;
+  const localActive  = !shared && isBurner && !!relayer.publicKey;
 
   const { status, logs, hashrate, start: rawStart, stop } = useMiner(
     connection,
     activeWallet,
-    useRelayer ? relayer : undefined
+    broadcaster
   );
 
-  // Wrap start() so we can auto-top-up the burner from the relayer first.
+  // Wrap start() so we can auto-top-up the burner before the first claim.
   const start = async () => {
-    if (useRelayer && burner.publicKey && burnerBalance !== null && burnerBalance < BURNER_TOPUP_THRESHOLD) {
-      try {
+    if (!isBurner || !burner.publicKey || burnerBalance === null) {
+      rawStart(); return;
+    }
+    if (burnerBalance >= BURNER_TOPUP_THRESHOLD) { rawStart(); return; }
+    try {
+      if (sharedActive) {
+        await sharedTopUp(burner.publicKey);
+      } else if (localActive) {
         await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
-      } catch (err: any) {
-        alert(`Top-up failed: ${err.message ?? err}\n\nMake sure the relayer wallet has SOL.`);
-        return;
+      } else {
+        // No relayer at all — burner has to fund itself. Just start; mining
+        // will fail with a clear "no SOL for fees" error if balance too low.
       }
+    } catch (err: any) {
+      alert(`Top-up failed: ${err.message ?? err}`);
+      return;
     }
     rawStart();
   };
@@ -219,40 +256,56 @@ export default function App() {
         )}
       </div>
 
-      {/* Relayer (gasless mode for burners) */}
-      <div className="wallet-bar">
-        <span className="wallet-address" style={{ color: useRelayer ? "#00ff99" : "var(--grey)" }}>
-          RELAYER {useRelayer ? "ON" : (relayer.publicKey ? "READY" : "OFF")}:
-        </span>
-        {!relayer.publicKey && (
-          <>
-            <button className="btn" onClick={handleGenerateRelayer}>[ GENERATE RELAYER ]</button>
-            <button className="btn" onClick={handleImportRelayer}>[ IMPORT RELAYER ]</button>
-          </>
-        )}
-        {relayer.publicKey && (
-          <>
-            <span className="wallet-address">
-              {relayer.publicKey.toBase58()}
-              {relayerBalance !== null && ` (${(relayerBalance / 1e9).toFixed(4)} SOL)`}
-            </span>
-            {burner.publicKey && (
-              <button className="btn" onClick={handleManualTopUp}>[ TOP UP BURNER ]</button>
-            )}
-            <button className="btn" onClick={handleExportRelayer}>[ EXPORT ]</button>
-            <button className="btn" onClick={handleClearRelayer}>[ CLEAR ]</button>
-          </>
-        )}
-      </div>
+      {/* Relayer — shared (server) takes precedence; local (browser) is fallback */}
+      {shared ? (
+        <div className="wallet-bar">
+          <span className="wallet-address" style={{ color: sharedActive ? "#00ff99" : "var(--grey)" }}>
+            SHARED RELAYER {sharedActive ? "ON" : "READY"}:
+          </span>
+          <span className="wallet-address">
+            {shared.pubkey.toBase58()} ({(shared.balance / 1e9).toFixed(4)} SOL)
+          </span>
+        </div>
+      ) : (
+        <div className="wallet-bar">
+          <span className="wallet-address" style={{ color: localActive ? "#00ff99" : "var(--grey)" }}>
+            LOCAL RELAYER {localActive ? "ON" : (relayer.publicKey ? "READY" : "OFF")}:
+          </span>
+          {!relayer.publicKey && (
+            <>
+              <button className="btn" onClick={handleGenerateRelayer}>[ GENERATE RELAYER ]</button>
+              <button className="btn" onClick={handleImportRelayer}>[ IMPORT RELAYER ]</button>
+            </>
+          )}
+          {relayer.publicKey && (
+            <>
+              <span className="wallet-address">
+                {relayer.publicKey.toBase58()}
+                {relayerBalance !== null && ` (${(relayerBalance / 1e9).toFixed(4)} SOL)`}
+              </span>
+              {burner.publicKey && (
+                <button className="btn" onClick={handleManualTopUp}>[ TOP UP BURNER ]</button>
+              )}
+              <button className="btn" onClick={handleExportRelayer}>[ EXPORT ]</button>
+              <button className="btn" onClick={handleClearRelayer}>[ CLEAR ]</button>
+            </>
+          )}
+        </div>
+      )}
 
       {(isBurner || relayer.publicKey) && (
         <div className="burner-warning">
-          ⚠ Browser-stored keypairs. Secret keys live in localStorage —
-          devnet/testing only. Do not put significant value in either wallet.
-          {useRelayer && (
+          ⚠ Browser-stored burner keypair. Secret key lives in localStorage —
+          devnet/testing only. Do not put significant value in this wallet.
+          {sharedActive && (
+            <> Fee-payer is operated server-side; the SOL pool is funded
+              and visible above. Burners get auto-topped-up before first claim.
+            </>
+          )}
+          {localActive && (
             <> Fund the relayer with devnet SOL via{" "}
               <code>solana airdrop 1 {relayer.publicKey?.toBase58()} --url devnet</code>{" "}
-              — burners get auto-topped-up at mining start when below 0.0025 SOL.
+              — burners get auto-topped-up at mining start when below 0.008 SOL.
             </>
           )}
         </div>

@@ -138,7 +138,7 @@ export default function App() {
   }
 
   function handleImportBurner() {
-    const json = prompt("Paste keypair JSON (64-element number array, same format as solana-keygen):");
+    const json = prompt("Paste secret key (any format):\n• JSON array  [12,34,...]\n• base58      vFM2d7k...\n• hex         0a1b2c...");
     if (!json) return;
     try {
       burner.importFromJson(json.trim());
@@ -176,7 +176,7 @@ export default function App() {
   function handleGenerateRelayer() { relayer.generate(); refreshWallets(); }
 
   function handleImportRelayer() {
-    const json = prompt("Paste relayer keypair JSON (64-element number array):");
+    const json = prompt("Paste relayer secret key (any format):\n• JSON array  [12,34,...]\n• base58      vFM2d7k...\n• hex         0a1b2c...");
     if (!json) return;
     try { relayer.importFromJson(json.trim()); refreshWallets(); }
     catch (err: any) { alert(`Import failed: ${err.message ?? err}`); }

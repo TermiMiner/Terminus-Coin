@@ -109,6 +109,57 @@ body,
   word-break: break-all;
 }
 
+.tab-strip {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--grey);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 5px 16px;
+  cursor: pointer;
+  border-radius: 2px;
+  letter-spacing: 0.05em;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.tab:hover {
+  border-color: var(--green-dim);
+  color: var(--green);
+}
+
+.tab.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(0, 255, 65, 0.07);
+}
+
+.stake-input {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--green);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 6px 10px;
+  flex: 1;
+  border-radius: 2px;
+}
+
+.stake-input:focus {
+  border-color: var(--green-dim);
+  outline: none;
+}
+
+.stake-input:disabled {
+  opacity: 0.4;
+}
+
 .burner-warning {
   background: rgba(255, 176, 0, 0.08);
   border: 1px solid var(--amber);

@@ -17,6 +17,8 @@ import {
   sharedTopUp,
   type SharedRelayerInfo,
 } from "./relayerAdapter";
+import { useStaking } from "./useStaking";
+import { executeStakingAction } from "./stakingActions";
 import logoUrl from "./assets/logo.jpg";
 
 // First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
@@ -45,6 +47,7 @@ export default function App() {
   // Burner + (optional) local relayer wallets. Local relayer is for users
   // running `npm run dev` against their own keypair. The deployed site uses
   // a server-side shared relayer (see fetchSharedRelayerInfo).
+  const [tab, setTab] = useState<"mine" | "stake">("mine");
   const burner = useMemo(() => new BrowserKeypairWallet(BURNER_STORAGE_KEY), []);
   const relayer = useMemo(() => new BrowserKeypairWallet(RELAYER_STORAGE_KEY), []);
   const [walletVersion, setWalletVersion] = useState(0);
@@ -217,6 +220,59 @@ export default function App() {
     !initialized ? "NOT INITIALIZED" :
     chain?.paused ? "PAUSED" : "LIVE";
 
+  // ── Staking state + actions ──
+  const staking = useStaking(connection, activeWallet.publicKey);
+  const [stakeInput, setStakeInput] = useState("");
+  const [unstakeInput, setUnstakeInput] = useState("");
+  const [stakeBusy, setStakeBusy] = useState<null | "stake" | "unstake" | "claim">(null);
+  const [stakeMsg, setStakeMsg] = useState<string | null>(null);
+
+  function fmtTerm(raw: bigint): string {
+    const whole = raw / 1_000_000n;
+    const frac = raw % 1_000_000n;
+    return `${whole.toLocaleString()}.${frac.toString().padStart(6, "0")}`;
+  }
+
+  async function runStaking(action: "stake" | "unstake" | "claim", amountStr?: string) {
+    if (!connection || !activeWallet.publicKey) return;
+    let amount = 0n;
+    if (action !== "claim") {
+      const n = Number(amountStr ?? "0");
+      if (!Number.isFinite(n) || n <= 0) { setStakeMsg("Enter a positive amount"); return; }
+      amount = BigInt(Math.round(n * 1_000_000)); // TERM has 6 decimals
+    }
+    setStakeBusy(action); setStakeMsg(null);
+    try {
+      const res = await executeStakingAction(
+        connection,
+        activeWallet,
+        broadcaster,
+        action === "claim" ? "claim_yield" : action,
+        amount
+      );
+      setStakeMsg(`Done. tx ${res.signature.slice(0, 16)}…`);
+      if (action === "stake")   setStakeInput("");
+      if (action === "unstake") setUnstakeInput("");
+    } catch (err: any) {
+      const msg: string = err?.message ?? String(err);
+      setStakeMsg(`Failed: ${msg.slice(0, 140)}`);
+    } finally {
+      setStakeBusy(null);
+    }
+  }
+
+  // APY estimate (epoch 0, current burn rate, current total_staked)
+  // Annual treasury inflow = claims/yr × (base × treasury_bps + claim_fee)
+  // For epoch 0: 17 TERM × 3% + 0.01 = 0.52 TERM per claim with stakers
+  // Claims/yr at target = (100/600) × 31_557_600 = 5,259,600
+  const apyEstimate = (() => {
+    if (staking.poolTotalStaked === 0n) return null;
+    const treasuryPerClaim = 17_000_000n * 300n / 10_000n + 10_000n; // 0.52 TERM in raw
+    const annualInflow = treasuryPerClaim * 5_259_600n;
+    const apy = Number(annualInflow * 10000n / staking.poolTotalStaked) / 100;
+    return apy;
+  })();
+
   return (
     <div className="terminal">
       {/* Header */}
@@ -311,6 +367,14 @@ export default function App() {
         </div>
       )}
 
+      {/* Tab strip */}
+      <div className="tab-strip">
+        <button className={`tab ${tab === "mine" ? "active" : ""}`} onClick={() => setTab("mine")}>[ MINE ]</button>
+        <button className={`tab ${tab === "stake" ? "active" : ""}`} onClick={() => setTab("stake")}>[ STAKE ]</button>
+      </div>
+
+      {tab === "mine" && (<>
+
       {/* Chain stats */}
       <div className="stats-grid">
         <div className="stat-box">
@@ -392,6 +456,102 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      </>)}
+
+      {tab === "stake" && (<>
+      {/* Position */}
+      <div className="stats-grid">
+        <div className="stat-box">
+          <div className="stat-label">Wallet balance</div>
+          <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.walletBalance)} TERM` : placeholder}</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Staked</div>
+          <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.staked)} TERM` : placeholder}</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Pending yield</div>
+          <div className={`stat-value ${staking.pendingYield > 0n ? "" : ""}`}>{activeWallet.publicKey ? `${fmtTerm(staking.pendingYield)} TERM` : placeholder}</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Pool share</div>
+          <div className="stat-value">
+            {staking.poolTotalStaked > 0n && staking.staked > 0n
+              ? `${(Number(staking.staked * 10000n / staking.poolTotalStaked) / 100).toFixed(2)}%`
+              : "0.00%"}
+          </div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Pool total staked</div>
+          <div className="stat-value">{fmtTerm(staking.poolTotalStaked)} TERM</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Treasury</div>
+          <div className="stat-value">{fmtTerm(staking.poolTreasury)} TERM</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Est. APY (epoch 0)</div>
+          <div className="stat-value">{apyEstimate !== null ? `${apyEstimate.toFixed(1)}%` : "—"}</div>
+        </div>
+        <div className="stat-box">
+          <div className="stat-label">Status</div>
+          <div className="stat-value">{staking.loading ? "LOADING…" : (staking.hasStakeAccount ? "STAKER" : "NOT STAKED")}</div>
+        </div>
+      </div>
+
+      {/* Staking actions */}
+      <div className="controls" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            className="stake-input"
+            type="number"
+            placeholder="amount to stake"
+            value={stakeInput}
+            onChange={(e) => setStakeInput(e.target.value)}
+            disabled={!activeWallet.publicKey || stakeBusy !== null}
+            min={0}
+            step="0.000001"
+          />
+          <button
+            className="btn"
+            disabled={!activeWallet.publicKey || stakeBusy !== null || !stakeInput}
+            onClick={() => runStaking("stake", stakeInput)}
+          >
+            {stakeBusy === "stake" ? "[ STAKING… ]" : "[ STAKE ]"}
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            className="stake-input"
+            type="number"
+            placeholder="amount to unstake"
+            value={unstakeInput}
+            onChange={(e) => setUnstakeInput(e.target.value)}
+            disabled={!activeWallet.publicKey || stakeBusy !== null || staking.staked === 0n}
+            min={0}
+            step="0.000001"
+          />
+          <button
+            className="btn"
+            disabled={!activeWallet.publicKey || stakeBusy !== null || !unstakeInput || staking.staked === 0n}
+            onClick={() => runStaking("unstake", unstakeInput)}
+          >
+            {stakeBusy === "unstake" ? "[ UNSTAKING… ]" : "[ UNSTAKE ]"}
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn"
+            disabled={!activeWallet.publicKey || stakeBusy !== null || staking.pendingYield === 0n}
+            onClick={() => runStaking("claim")}
+          >
+            {stakeBusy === "claim" ? "[ CLAIMING… ]" : `[ CLAIM YIELD${staking.pendingYield > 0n ? ` — ${fmtTerm(staking.pendingYield)} TERM` : ""} ]`}
+          </button>
+        </div>
+        {stakeMsg && <div className="log-line dim" style={{ paddingTop: 6 }}>{stakeMsg}</div>}
+      </div>
+      </>)}
 
       {/* Footer */}
       <div className="footer">

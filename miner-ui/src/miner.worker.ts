@@ -7,12 +7,14 @@ export interface MineRequest {
 }
 
 export interface MineResult {
-  nonce: string; // bigint serialised as decimal string
+  nonce: string;     // bigint serialised as decimal string
   attempts: number;
   elapsed: number;
+  bonusBits: number; // 0..=BONUS_CAP — the lucky multiplier exponent
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
+const BONUS_CAP = 8;
 
 self.onmessage = (ev: MessageEvent<MineRequest>) => {
   const { lastHash, pubkey, difficulty } = ev.data;
@@ -32,7 +34,6 @@ self.onmessage = (ev: MessageEvent<MineRequest>) => {
     inputView.setBigUint64(0, n, true);
     attempts++;
     const hash = keccak_256(input);
-    // Read first 8 bytes of hash as big-endian u64
     const hashHigh =
       (BigInt(hash[0]) << 56n) |
       (BigInt(hash[1]) << 48n) |
@@ -43,8 +44,21 @@ self.onmessage = (ev: MessageEvent<MineRequest>) => {
       (BigInt(hash[6]) <<  8n) |
        BigInt(hash[7]);
     if (hashHigh <= target) {
+      // Compute bonus bits — same formula as on-chain lucky_reward()
+      let bonusBits = 0;
+      if (hashHigh === 0n) {
+        bonusBits = BONUS_CAP;
+      } else if (target > 0n) {
+        const ratio = target / hashHigh;
+        if (ratio > 0n) {
+          let log2 = 0;
+          let r = ratio;
+          while (r > 1n) { r >>= 1n; log2++; }
+          bonusBits = Math.min(log2, BONUS_CAP);
+        }
+      }
       const elapsed = performance.now() - t0;
-      self.postMessage({ nonce: n.toString(), attempts, elapsed } satisfies MineResult);
+      self.postMessage({ nonce: n.toString(), attempts, elapsed, bonusBits } satisfies MineResult);
       return;
     }
   }

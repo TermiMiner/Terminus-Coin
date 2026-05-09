@@ -45,6 +45,10 @@ function meetsdifficulty(hash: Uint8Array, target: bigint): boolean {
 }
 
 function mineNonce(lastHash: number[], user: anchor.web3.PublicKey, difficulty: anchor.BN | bigint): anchor.BN {
+  return mineNonceWithHash(lastHash, user, difficulty).nonce;
+}
+
+function mineNonceWithHash(lastHash: number[], user: anchor.web3.PublicKey, difficulty: anchor.BN | bigint): { nonce: anchor.BN; hash: Uint8Array } {
   const diff = typeof difficulty === "bigint" ? difficulty : BigInt(difficulty.toString());
   const target = diff <= 1n ? MAX_U64 : MAX_U64 / diff;
   const input = new Uint8Array(72);
@@ -53,8 +57,33 @@ function mineNonce(lastHash: number[], user: anchor.web3.PublicKey, difficulty: 
   const view = new DataView(input.buffer);
   for (let n = 0n; ; n++) {
     view.setBigUint64(0, n, true);
-    if (meetsdifficulty(keccak_256(input), target)) return new anchor.BN(n.toString());
+    const hash = keccak_256(input);
+    if (meetsdifficulty(hash, target)) {
+      return { nonce: new anchor.BN(n.toString()), hash };
+    }
   }
+}
+
+// Mirrors the on-chain lucky_reward() — returns (final_reward, bonus_bits) for a given hash.
+const BONUS_CAP_TS = 8;
+function luckyReward(base: bigint, hash: Uint8Array, difficulty: anchor.BN | bigint): { reward: bigint; bonusBits: number } {
+  const diff = typeof difficulty === "bigint" ? difficulty : BigInt(difficulty.toString());
+  if (base === 0n || diff <= 1n) return { reward: base, bonusBits: 0 };
+
+  let hashHigh = 0n;
+  for (let i = 0; i < 8; i++) hashHigh = (hashHigh << 8n) | BigInt(hash[i]);
+  const maxValid = MAX_U64 / diff;
+  if (hashHigh > maxValid) return { reward: base, bonusBits: 0 };
+  if (hashHigh === 0n) return { reward: base * (1n << BigInt(BONUS_CAP_TS)), bonusBits: BONUS_CAP_TS };
+
+  const ratio = maxValid / hashHigh;
+  if (ratio === 0n) return { reward: base, bonusBits: 0 };
+  // floor(log2(ratio))
+  let log2 = 0;
+  let r = ratio;
+  while (r > 1n) { r >>= 1n; log2++; }
+  const bonusBits = Math.min(log2, BONUS_CAP_TS);
+  return { reward: base * (1n << BigInt(bonusBits)), bonusBits };
 }
 
 // ─── Suite ───────────────────────────────────────────────────────────────────
@@ -198,27 +227,33 @@ describe("terminuscoin – full feature suite", () => {
       const poolBefore = await program.account.stakePool.fetch(stakePoolPDA);
       const state = await program.account.globalState.fetch(globalStatePDA);
 
-      await doClaim();
+      // Mine + capture the hash so we can predict the lucky-block multiplier
+      const { nonce, hash } = mineNonceWithHash(state.lastHash as number[], wallet.publicKey, state.difficulty);
+      await program.methods
+        .claim(nonce)
+        .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+        .rpc();
 
       const balAfter = await getAccount(provider.connection, userTokenAccount);
       const poolAfter = await program.account.stakePool.fetch(stakePoolPDA);
       const statAfter = await program.account.globalState.fetch(globalStatePDA);
 
-      const base = 17_000_000;
+      const baseUnscaled = 3_400_000n;
+      const { reward: base, bonusBits } = luckyReward(baseUnscaled, hash, state.difficulty);
       const burnBps = burnBpsForDifficulty(state.difficulty);
-      const burnAmount = Math.floor(base * burnBps / 10_000);
-      const treasuryAmount = Math.floor(base * 300 / 10_000);
+      const burnAmount = base * BigInt(burnBps) / 10_000n;
+      const treasuryAmount = base * 300n / 10_000n;
       const expectedNet = base - burnAmount - treasuryAmount;
 
-      // User receives net_reward (mint then burn happens under the hood)
-      const received = Number(balAfter.amount) - Number(balBefore.amount);
-      expect(received).to.equal(expectedNet);
+      const received = BigInt(balAfter.amount.toString()) - BigInt(balBefore.amount.toString());
+      expect(received).to.equal(expectedNet, `bonus_bits=${bonusBits} net=${expectedNet} got=${received}`);
 
-      // With no stakers, treasury tokens are not created
+      // No stakers → treasury unchanged
       expect(poolAfter.treasuryBalance.toNumber()).to.equal(poolBefore.treasuryBalance.toNumber());
 
-      // total_minted only commits net_reward when nobody is staking
-      expect(statAfter.totalMinted.toNumber()).to.equal(state.totalMinted.toNumber() + expectedNet);
+      // total_minted commits exactly net_reward when no stakers
+      const minted = BigInt(statAfter.totalMinted.toString()) - BigInt(state.totalMinted.toString());
+      expect(minted).to.equal(expectedNet);
     });
 
     it("rotates last_hash after each claim", async () => {
@@ -443,16 +478,24 @@ describe("terminuscoin – full feature suite", () => {
 
     it("claim accrues reward_per_token and treasury when staked", async () => {
       const poolBefore = await program.account.stakePool.fetch(stakePoolPDA);
-      await doClaim();
+      const state = await program.account.globalState.fetch(globalStatePDA);
+
+      // Mine + capture hash so we can predict treasury delta with the lucky multiplier
+      const { nonce, hash } = mineNonceWithHash(state.lastHash as number[], wallet.publicKey, state.difficulty);
+      await program.methods
+        .claim(nonce)
+        .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+        .rpc();
+
       const poolAfter = await program.account.stakePool.fetch(stakePoolPDA);
-      // With stakers present, both reward accumulator and treasury balance grow
       expect(poolAfter.rewardPerTokenStored.gt(poolBefore.rewardPerTokenStored)).to.be.true;
-      const base = 17_000_000;
-      const claimFee = 10_000;
-      const expectedTreasury = Math.floor(base * 300 / 10_000) + claimFee;
-      expect(poolAfter.treasuryBalance.toNumber()).to.equal(
-        poolBefore.treasuryBalance.toNumber() + expectedTreasury
-      );
+
+      const baseUnscaled = 3_400_000n;
+      const { reward: base } = luckyReward(baseUnscaled, hash, state.difficulty);
+      const claimFee = 10_000n;
+      const expectedTreasury = (base * 300n / 10_000n) + claimFee;
+      const actualDelta = BigInt(poolAfter.treasuryBalance.toString()) - BigInt(poolBefore.treasuryBalance.toString());
+      expect(actualDelta).to.equal(expectedTreasury);
     });
 
     it("claim_yield mints accumulated staking yield", async () => {

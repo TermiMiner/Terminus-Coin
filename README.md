@@ -19,6 +19,26 @@ Proof-of-work SPL token on Solana. Miners burn keccak256 hashes to claim emissio
 
 Per-claim split: **96% to miner**, **0.25–5% burned** (dynamic — see below), **3% to staking treasury** (only credited when stakers exist).
 
+## Lucky-block rewards
+
+Each successful claim's reward is **multiplied by 2^bonus_bits**, where `bonus_bits` is how much the hash overshoots the difficulty threshold. The hash itself is the entropy source — no oracles, no extra latency. Cap is 8 bits.
+
+| Outcome | Probability | Multiplier | Reward (epoch 0) |
+|---|---|---|---|
+| Just barely valid | 50% | 1× | **3.4 TERM** |
+| +1 extra zero bit | 25% | 2× | 6.8 TERM |
+| +2 | 12.5% | 4× | 13.6 TERM |
+| +3 | 6.25% | 8× | 27.2 TERM |
+| +4 | 3.125% | 16× | 54.4 TERM |
+| +5 | 1.56% | 32× | 108.8 TERM |
+| +6 | 0.78% | 64× | 217.6 TERM |
+| +7 | 0.39% | 128× | 435.2 TERM |
+| **+8 (jackpot)** | **0.39%** | **256×** | **870.4 TERM** |
+
+**Expected value:** 5 × base = **17 TERM per claim** at epoch 0 — same emission schedule as the deterministic-reward design, just with variance. Total mined over 50 years still ~894M TERM in expectation.
+
+**Why miners can't grind for jackpots:** EV per unit of compute is constant across strategies (2× the work for 2× the bonus → same EV/work). Combined with `last_hash` rotation (waiting risks losing your valid nonce to another miner), submit-on-first-valid is the dominant strategy.
+
 In addition, when stakers exist, each claim contributes a fixed **0.01 TERM fee** to the staking treasury. This fee is constant regardless of epoch, so it remains the dominant treasury source after the halving curve flattens — providing a perpetual security budget that doesn't depend on emissions.
 
 ## Dynamic burn

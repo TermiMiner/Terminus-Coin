@@ -2688,6 +2688,10 @@
             "type": "u64"
           },
           {
+            "name": "bonus_bits",
+            "type": "u32"
+          },
+          {
             "name": "net_reward",
             "type": "u64"
           },

@@ -11,7 +11,21 @@ declare_id!("FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y");
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SUPPLY_CAP: u64 = 1_000_000_000_000_000;      // 1 B tokens × 10^6
-const INITIAL_BASE_REWARD: u64 = 17_000_000;         // 17 TERM at epoch 0 → ~894M mined over 50 yrs
+// Lucky-block reward: a claim's payout is base × 2^bonus_bits where bonus_bits
+// = floor(log2( (max_valid_hash) / hash_high )), capped at BONUS_CAP. The hash
+// itself is the entropy source — no oracles, no extra accounts. EV per claim
+// = (BONUS_CAP / 2 + 1) × base, so with cap=8 and base=3.4 TERM the expected
+// emission per claim is 17 TERM at epoch 0 → ~894M total over 50 years
+// (unchanged from the deterministic-reward design).
+//
+// Distribution per claim (epoch 0):
+//   50%   → 3.4 TERM     (just barely valid)
+//   25%   → 6.8 TERM
+//   12.5% → 13.6 TERM
+//   ...
+//   0.39% → 870 TERM     (jackpot)
+const INITIAL_BASE_REWARD: u64 = 3_400_000;          // 3.4 TERM base, 5x EV → 17 TERM expected/claim
+const BONUS_CAP: u32 = 8;                            // max bonus bits → max payout = 256× base
 const EPOCH_SECONDS: i64 = 5 * 31_557_600;           // 5 × 365.25-day years in seconds
 const MAX_EPOCHS: u32 = 10;                           // 50-year programme (10 epochs × 5 yrs)
 
@@ -216,7 +230,12 @@ pub mod terminuscoin {
         // ── Emission schedule ─────────────────────────────────────────────────
         let elapsed = current_time.saturating_sub(ctx.accounts.global_state.launch_time).max(0);
         let epoch = ((elapsed / EPOCH_SECONDS) as u32).min(MAX_EPOCHS - 1);
-        let base_reward = INITIAL_BASE_REWARD >> epoch;
+        let base_unscaled = INITIAL_BASE_REWARD >> epoch;
+        let (base_reward, bonus_bits) = lucky_reward(
+            base_unscaled,
+            &hash_result.0,
+            ctx.accounts.global_state.difficulty,
+        );
 
         // ── Reward split ──────────────────────────────────────────────────────
         let burn_bps = burn_bps_for(ctx.accounts.global_state.difficulty);
@@ -330,6 +349,7 @@ pub mod terminuscoin {
         emit!(ClaimMined {
             miner: user_key,
             nonce,
+            bonus_bits,
             net_reward,
             burn_amount,
             treasury_committed,
@@ -338,8 +358,9 @@ pub mod terminuscoin {
             total_minted: ctx.accounts.global_state.total_minted,
         });
         msg!(
-            "Mined: net={} burn={} treasury={} | epoch={} diff={} committed={}",
+            "Mined: net={} bonus_bits={} burn={} treasury={} | epoch={} diff={} committed={}",
             net_reward,
+            bonus_bits,
             burn_amount,
             treasury_committed,
             epoch,
@@ -840,6 +861,39 @@ fn meets_difficulty(hash: &[u8; 32], difficulty: u64) -> bool {
         hash[4], hash[5], hash[6], hash[7],
     ]);
     hash_high <= u64::MAX / difficulty
+}
+
+/// Apply lucky-block multiplier based on how much the hash overshoots the
+/// difficulty threshold. Returns (final_reward, bonus_bits).
+///
+/// Each "extra zero bit" (the hash being half the threshold value) doubles
+/// the reward, capped at 2^BONUS_CAP. EV per unit of compute is constant
+/// (2× the work to find a 2× bonus), so miners are indifferent between
+/// strategies — and `last_hash` rotation makes "submit immediately" the
+/// dominant strategy regardless.
+fn lucky_reward(base: u64, hash: &[u8; 32], difficulty: u64) -> (u64, u32) {
+    if base == 0 || difficulty <= 1 { return (base, 0); }
+
+    let hash_high = u64::from_be_bytes([
+        hash[0], hash[1], hash[2], hash[3],
+        hash[4], hash[5], hash[6], hash[7],
+    ]);
+    let max_valid = u64::MAX / difficulty;
+
+    // Defensive: caller should have already verified meets_difficulty.
+    if hash_high > max_valid { return (base, 0); }
+
+    // hash_high == 0 → astronomically lucky (1 in 2^64). Give max bonus.
+    if hash_high == 0 {
+        return (base.saturating_mul(1u64 << BONUS_CAP), BONUS_CAP);
+    }
+
+    // ratio = how many times "luckier" than threshold.
+    // bonus_bits = floor(log2(ratio)), clamped to BONUS_CAP.
+    let ratio = max_valid / hash_high;
+    if ratio == 0 { return (base, 0); }
+    let bonus_bits = (63 - ratio.leading_zeros()).min(BONUS_CAP);
+    (base.saturating_mul(1u64 << bonus_bits), bonus_bits)
 }
 
 /// Amount of tranche `i` vested at `elapsed` seconds since vesting start.
@@ -1470,6 +1524,7 @@ pub struct CreateMetadata<'info> {
 pub struct ClaimMined {
     pub miner: Pubkey,
     pub nonce: u64,
+    pub bonus_bits: u32,         // 0..=BONUS_CAP — indexers filter ≥4 to surface "jackpots"
     pub net_reward: u64,
     pub burn_amount: u64,
     pub treasury_committed: u64,

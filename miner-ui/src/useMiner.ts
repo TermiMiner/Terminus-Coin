@@ -146,13 +146,26 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
       worker.postMessage(req);
 
       worker.onmessage = async (ev: MessageEvent<MineResult>) => {
-        const { nonce, attempts, elapsed } = ev.data;
+        const { nonce, attempts, elapsed, bonusBits } = ev.data;
         worker.terminate();
         workerRef.current = null;
 
         const hr = Math.round(attempts / (elapsed / 1000));
         setHashrate(hr);
+
+        // Predict the reward this nonce will earn (assumes epoch 0 — UI doesn't track epoch yet)
+        const baseUnscaled = 3_400_000n;
+        const expectedRaw = baseUnscaled * (1n << BigInt(bonusBits));
+        const expectedTerm = (Number(expectedRaw) / 1e6).toFixed(2);
+        const luckLabel =
+          bonusBits >= 8 ? " 🎰 JACKPOT" :
+          bonusBits >= 6 ? " ⭐ BIG HIT" :
+          bonusBits >= 4 ? " ✨ lucky" :
+          bonusBits >= 2 ? "" : "";
+
         appendLog("dim", `[${ts()}] Found nonce ${nonce} in ${attempts.toLocaleString()} attempts (${(elapsed / 1000).toFixed(2)}s, ~${hr.toLocaleString()} H/s)`);
+        const level: "info" | "success" = bonusBits >= 4 ? "success" : "info";
+        appendLog(level, `[${ts()}] Bonus +${bonusBits} bits → ~${expectedTerm} TERM gross${luckLabel}`);
 
         if (!shouldRestartRef.current) { setStatus("idle"); return; }
 

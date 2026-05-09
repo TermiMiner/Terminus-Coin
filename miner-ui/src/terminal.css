@@ -160,6 +160,31 @@ body,
   opacity: 0.4;
 }
 
+.wallet-balances {
+  border-top: none;
+  padding-top: 0;
+  margin-top: -4px;
+}
+
+.balance-pill {
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg2);
+}
+
+.balance-pill.sol {
+  color: #9945ff;
+  border-color: rgba(153, 69, 255, 0.4);
+}
+
+.balance-pill.term {
+  color: var(--green);
+  border-color: var(--green-dim);
+}
+
 .burner-warning {
   background: rgba(255, 176, 0, 0.08);
   border: 1px solid var(--amber);

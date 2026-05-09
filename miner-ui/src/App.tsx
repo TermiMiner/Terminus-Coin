@@ -66,7 +66,14 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  // Live SOL balances for burner + local relayer (polled every 5s)
+  // Pick which wallet drives mining: prefer Phantom if connected, else burner.
+  const activeWallet: MinerWallet = phantom.publicKey
+    ? { publicKey: phantom.publicKey, signTransaction: phantom.signTransaction }
+    : burner;
+  const isBurner = !phantom.publicKey && !!burner.publicKey;
+
+  // Live SOL balances for active wallet, burner, local relayer (polled every 5s)
+  const [activeSolBalance, setActiveSolBalance] = useState<number | null>(null);
   const [burnerBalance, setBurnerBalance] = useState<number | null>(null);
   const [relayerBalance, setRelayerBalance] = useState<number | null>(null);
   useEffect(() => {
@@ -74,20 +81,15 @@ export default function App() {
     let cancelled = false;
     async function poll() {
       if (!connection || cancelled) return;
+      const a = activeWallet.publicKey ? await connection.getBalance(activeWallet.publicKey).catch(() => null) : null;
       const b = burner.publicKey ? await connection.getBalance(burner.publicKey).catch(() => null) : null;
       const r = relayer.publicKey ? await connection.getBalance(relayer.publicKey).catch(() => null) : null;
-      if (!cancelled) { setBurnerBalance(b); setRelayerBalance(r); }
+      if (!cancelled) { setActiveSolBalance(a); setBurnerBalance(b); setRelayerBalance(r); }
     }
     poll();
     const id = setInterval(poll, 5_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [connection, burner, relayer, walletVersion]);
-
-  // Pick which wallet drives mining: prefer Phantom if connected, else burner.
-  const activeWallet: MinerWallet = phantom.publicKey
-    ? { publicKey: phantom.publicKey, signTransaction: phantom.signTransaction }
-    : burner;
-  const isBurner = !phantom.publicKey && !!burner.publicKey;
+  }, [connection, burner, relayer, walletVersion, activeWallet.publicKey?.toBase58()]);
 
   // Choose broadcaster: shared (server) > local (browser) > none.
   const broadcaster: BroadcastAdapter | undefined =
@@ -299,10 +301,7 @@ export default function App() {
         {isBurner && (
           <>
             <span className="status-pill mining">BURNER</span>
-            <span className="wallet-address">
-              {burner.publicKey!.toBase58()}
-              {burnerBalance !== null && ` (${(burnerBalance / 1e9).toFixed(4)} SOL)`}
-            </span>
+            <span className="wallet-address">{burner.publicKey!.toBase58()}</span>
             <button className="btn" onClick={handleExportBurner}>[ EXPORT KEY ]</button>
             <button className="btn" onClick={handleClearBurner}>[ CLEAR ]</button>
           </>
@@ -311,6 +310,19 @@ export default function App() {
           <span className="wallet-address">{phantom.publicKey.toBase58()}</span>
         )}
       </div>
+
+      {/* Active wallet balances */}
+      {activeWallet.publicKey && (
+        <div className="wallet-bar wallet-balances">
+          <span className="wallet-address">BALANCE:</span>
+          <span className="balance-pill sol">
+            {activeSolBalance !== null ? `${(activeSolBalance / 1e9).toFixed(4)} SOL` : "… SOL"}
+          </span>
+          <span className="balance-pill term">
+            {!staking.loading ? `${fmtTerm(staking.walletBalance)} TERM` : "… TERM"}
+          </span>
+        </div>
+      )}
 
       {/* Relayer — shared (server) takes precedence; local (browser) is fallback */}
       {shared ? (

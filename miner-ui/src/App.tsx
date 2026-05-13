@@ -48,6 +48,27 @@ export default function App() {
   // running `npm run dev` against their own keypair. The deployed site uses
   // a server-side shared relayer (see fetchSharedRelayerInfo).
   const [tab, setTab] = useState<"mine" | "stake">("mine");
+
+  // Collapsible stats sections — default collapsed on mobile, persisted across reloads.
+  // Initial value is read from localStorage, falling back to viewport width.
+  const [statsCollapsed, setStatsCollapsed] = useState<boolean>(() => {
+    const stored = localStorage.getItem("terminus.stats_collapsed");
+    if (stored !== null) return stored === "1";
+    return typeof window !== "undefined" && window.innerWidth <= 600;
+  });
+  useEffect(() => {
+    localStorage.setItem("terminus.stats_collapsed", statsCollapsed ? "1" : "0");
+  }, [statsCollapsed]);
+
+  // Background tab detection — mobile browsers throttle JS in hidden tabs.
+  // When tab is hidden the status pill shows "TAB PAUSED" so users understand
+  // why mining stalled when they return.
+  const [tabHidden, setTabHidden] = useState(false);
+  useEffect(() => {
+    function onVis() { setTabHidden(document.hidden); }
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
   const burner = useMemo(() => new BrowserKeypairWallet(BURNER_STORAGE_KEY), []);
   const relayer = useMemo(() => new BrowserKeypairWallet(RELAYER_STORAGE_KEY), []);
   const [walletVersion, setWalletVersion] = useState(0);
@@ -311,6 +332,12 @@ export default function App() {
         )}
       </div>
 
+      {phantom.publicKey && (
+        <div className="phantom-tip">
+          Tip: Phantom prompts a confirmation for each claim. Generate a burner for continuous, autonomous mining.
+        </div>
+      )}
+
       {/* Active wallet balances */}
       {activeWallet.publicKey && (
         <div className="wallet-bar wallet-balances">
@@ -387,76 +414,94 @@ export default function App() {
 
       {tab === "mine" && (<>
 
-      {/* Chain stats */}
-      <div className="stats-grid">
-        <div className="stat-box">
-          <div className="stat-label">Difficulty</div>
-          <div className={`stat-value ${chain && chain.difficulty >= 1_000_000n ? "amber" : ""}`}>
-            {chain ? `1 / ${chain.difficulty.toLocaleString()}` : placeholder}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Total Claims</div>
-          <div className="stat-value">
-            {chain ? chain.totalClaims.toLocaleString() : placeholder}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Total Minted</div>
-          <div className="stat-value">
-            {chain ? `${fmt6(chain.totalMinted)} TERM` : placeholder}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Supply Used</div>
-          <div className="stat-value">
-            {chain ? `${capPct(chain.totalMinted)}%` : placeholder}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Treasury</div>
-          <div className="stat-value">
-            {chain ? `${fmt6(chain.treasuryBalance)} TERM` : placeholder}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Hashrate</div>
-          <div className={`stat-value ${hashrate && hashrate < 10_000 ? "amber" : ""}`}>
-            {hashrate ? `${hashrate.toLocaleString()} H/s` : "—"}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Status</div>
-          <div className={`stat-value ${chain?.paused || (!loading && !initialized) ? "red" : ""}`}>
-            {chainStatusLabel}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Last Hash</div>
-          <div className="stat-value" style={{ fontSize: 11, letterSpacing: "0.02em" }}>
-            {chain ? Buffer.from(chain.lastHash).toString("hex").slice(0, 16) + "…" : placeholder}
-          </div>
-        </div>
-      </div>
-
-      {/* Controls */}
+      {/* Controls — hoisted above stats so the primary action isn't buried */}
       <div className="controls">
         {!mining ? (
-          <button className="btn" disabled={!canMine} onClick={start}>
+          <button className="btn primary-action" disabled={!canMine} onClick={start}>
             [ START MINING ]
           </button>
         ) : (
-          <button className="btn active" onClick={stop}>
+          <button className="btn primary-action active" onClick={stop}>
             [ STOP ]
           </button>
         )}
 
         <span className={`status-pill ${status === "idle" ? "idle" : status === "error" ? "error" : "mining"}`}>
-          {status.toUpperCase()}
+          {tabHidden && mining ? "TAB PAUSED" : status.toUpperCase()}
         </span>
 
         {chain?.paused && (
           <span className="status-pill error">PROGRAM PAUSED</span>
+        )}
+      </div>
+
+      {/* Chain stats — collapsible */}
+      <div className="stats-section">
+        <button
+          className="stats-header"
+          onClick={() => setStatsCollapsed((v) => !v)}
+          aria-expanded={!statsCollapsed}
+        >
+          <span>STATS {statsCollapsed ? "▸" : "▾"}</span>
+          {statsCollapsed && chain && (
+            <span className="stats-summary">
+              1/{chain.difficulty.toLocaleString()}
+              {" · "}{chain.totalClaims.toLocaleString()} claims
+              {" · "}{chainStatusLabel}
+            </span>
+          )}
+        </button>
+        {!statsCollapsed && (
+          <div className="stats-grid">
+            <div className="stat-box">
+              <div className="stat-label">Difficulty</div>
+              <div className={`stat-value ${chain && chain.difficulty >= 1_000_000n ? "amber" : ""}`}>
+                {chain ? `1 / ${chain.difficulty.toLocaleString()}` : placeholder}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Total Claims</div>
+              <div className="stat-value">
+                {chain ? chain.totalClaims.toLocaleString() : placeholder}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Total Minted</div>
+              <div className="stat-value">
+                {chain ? `${fmt6(chain.totalMinted)} TERM` : placeholder}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Supply Used</div>
+              <div className="stat-value">
+                {chain ? `${capPct(chain.totalMinted)}%` : placeholder}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Treasury</div>
+              <div className="stat-value">
+                {chain ? `${fmt6(chain.treasuryBalance)} TERM` : placeholder}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Hashrate</div>
+              <div className={`stat-value ${hashrate && hashrate < 10_000 ? "amber" : ""}`}>
+                {hashrate ? `${hashrate.toLocaleString()} H/s` : "—"}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Status</div>
+              <div className={`stat-value ${chain?.paused || (!loading && !initialized) ? "red" : ""}`}>
+                {chainStatusLabel}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Last Hash</div>
+              <div className="stat-value" style={{ fontSize: 11, letterSpacing: "0.02em" }}>
+                {chain ? Buffer.from(chain.lastHash).toString("hex").slice(0, 16) + "…" : placeholder}
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
@@ -472,47 +517,7 @@ export default function App() {
       </>)}
 
       {tab === "stake" && (<>
-      {/* Position */}
-      <div className="stats-grid">
-        <div className="stat-box">
-          <div className="stat-label">Wallet balance</div>
-          <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.walletBalance)} TERM` : placeholder}</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Staked</div>
-          <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.staked)} TERM` : placeholder}</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Pending yield</div>
-          <div className={`stat-value ${staking.pendingYield > 0n ? "" : ""}`}>{activeWallet.publicKey ? `${fmtTerm(staking.pendingYield)} TERM` : placeholder}</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Pool share</div>
-          <div className="stat-value">
-            {staking.poolTotalStaked > 0n && staking.staked > 0n
-              ? `${(Number(staking.staked * 10000n / staking.poolTotalStaked) / 100).toFixed(2)}%`
-              : "0.00%"}
-          </div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Pool total staked</div>
-          <div className="stat-value">{fmtTerm(staking.poolTotalStaked)} TERM</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Treasury</div>
-          <div className="stat-value">{fmtTerm(staking.poolTreasury)} TERM</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Est. APY (epoch 0)</div>
-          <div className="stat-value">{apyEstimate !== null ? `${apyEstimate.toFixed(1)}%` : "—"}</div>
-        </div>
-        <div className="stat-box">
-          <div className="stat-label">Status</div>
-          <div className="stat-value">{staking.loading ? "LOADING…" : (staking.hasStakeAccount ? "STAKER" : "NOT STAKED")}</div>
-        </div>
-      </div>
-
-      {/* Staking actions */}
+      {/* Staking actions — hoisted above stats for parity with the mine tab */}
       <div className="controls" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
@@ -562,6 +567,64 @@ export default function App() {
           </button>
         </div>
         {stakeMsg && <div className="log-line dim" style={{ paddingTop: 6 }}>{stakeMsg}</div>}
+      </div>
+
+      {/* Position — collapsible */}
+      <div className="stats-section">
+        <button
+          className="stats-header"
+          onClick={() => setStatsCollapsed((v) => !v)}
+          aria-expanded={!statsCollapsed}
+        >
+          <span>POSITION {statsCollapsed ? "▸" : "▾"}</span>
+          {statsCollapsed && activeWallet.publicKey && (
+            <span className="stats-summary">
+              {fmtTerm(staking.staked)} staked
+              {" · "}{fmtTerm(staking.pendingYield)} pending
+              {" · "}{staking.hasStakeAccount ? "STAKER" : "NOT STAKED"}
+            </span>
+          )}
+        </button>
+        {!statsCollapsed && (
+          <div className="stats-grid">
+            <div className="stat-box">
+              <div className="stat-label">Wallet balance</div>
+              <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.walletBalance)} TERM` : placeholder}</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Staked</div>
+              <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.staked)} TERM` : placeholder}</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Pending yield</div>
+              <div className="stat-value">{activeWallet.publicKey ? `${fmtTerm(staking.pendingYield)} TERM` : placeholder}</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Pool share</div>
+              <div className="stat-value">
+                {staking.poolTotalStaked > 0n && staking.staked > 0n
+                  ? `${(Number(staking.staked * 10000n / staking.poolTotalStaked) / 100).toFixed(2)}%`
+                  : "0.00%"}
+              </div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Pool total staked</div>
+              <div className="stat-value">{fmtTerm(staking.poolTotalStaked)} TERM</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Treasury</div>
+              <div className="stat-value">{fmtTerm(staking.poolTreasury)} TERM</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Est. APY (epoch 0)</div>
+              <div className="stat-value">{apyEstimate !== null ? `${apyEstimate.toFixed(1)}%` : "—"}</div>
+            </div>
+            <div className="stat-box">
+              <div className="stat-label">Status</div>
+              <div className="stat-value">{staking.loading ? "LOADING…" : (staking.hasStakeAccount ? "STAKER" : "NOT STAKED")}</div>
+            </div>
+          </div>
+        )}
       </div>
       </>)}
 

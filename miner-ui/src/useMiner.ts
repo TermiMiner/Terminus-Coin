@@ -153,7 +153,9 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
         const hr = Math.round(attempts / (elapsed / 1000));
         setHashrate(hr);
 
-        // Predict the reward this nonce will earn (assumes epoch 0 — UI doesn't track epoch yet)
+        // Predict the reward this nonce will earn (assumes epoch 0 — UI doesn't track epoch yet).
+        // Hold the reveal until the claim actually lands on chain — keeps the
+        // slot-machine moment intact instead of spoiling it during mining.
         const baseUnscaled = 3_400_000n;
         const expectedRaw = baseUnscaled * (1n << BigInt(bonusBits));
         const expectedTerm = (Number(expectedRaw) / 1e6).toFixed(2);
@@ -161,11 +163,9 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
           bonusBits >= 8 ? " 🎰 JACKPOT" :
           bonusBits >= 6 ? " ⭐ BIG HIT" :
           bonusBits >= 4 ? " ✨ lucky" :
-          bonusBits >= 2 ? "" : "";
+          "";
 
         appendLog("dim", `[${ts()}] Found nonce ${nonce} in ${attempts.toLocaleString()} attempts (${(elapsed / 1000).toFixed(2)}s, ~${hr.toLocaleString()} H/s)`);
-        const level: "info" | "success" = bonusBits >= 4 ? "success" : "info";
-        appendLog(level, `[${ts()}] Bonus +${bonusBits} bits → ~${expectedTerm} TERM gross${luckLabel}`);
 
         if (!shouldRestartRef.current) { setStatus("idle"); return; }
 
@@ -240,11 +240,17 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
           }
           await connection!.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
 
-          appendLog("success", `[${ts()}] Claimed! tx=${sig.slice(0, 16)}…`);
+          // Reveal the bonus along with the claim — the slot-machine moment.
+          const level: "info" | "success" = bonusBits >= 4 ? "success" : "info";
+          appendLog(level, `[${ts()}] Claimed! tx=${sig.slice(0, 16)}… — Bonus +${bonusBits} bits → ~${expectedTerm} TERM gross${luckLabel}`);
           backoffMs = 0;
         } catch (err: any) {
           const friendly = friendlyClaimError(err);
-          appendLog("error", `[${ts()}] ${friendly}`);
+          // Tell the user what they "would have" won so a missed jackpot feels like a story, not a silent loss.
+          const missedLabel = bonusBits >= 4
+            ? ` — missed +${bonusBits} bits / ${expectedTerm} TERM${luckLabel}`
+            : "";
+          appendLog("error", `[${ts()}] ${friendly}${missedLabel}`);
           if (friendly.startsWith("Claim failed:") && err?.logs) {
             for (const l of (err.logs as string[]).slice(0, 4))
               appendLog("error", `  ${l}`);

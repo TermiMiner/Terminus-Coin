@@ -185,6 +185,63 @@ body,
   border-color: var(--green-dim);
 }
 
+/* ── Collapsible stats section ───────────────────────────────────── */
+
+.stats-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stats-header {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--green);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 2px;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.stats-header:hover {
+  border-color: var(--green-dim);
+  background: rgba(0, 255, 65, 0.04);
+}
+
+.stats-header > span:first-child {
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.stats-summary {
+  color: var(--grey);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+.primary-action {
+  font-size: 14px;
+  padding: 8px 20px;
+  font-weight: 700;
+}
+
+.phantom-tip {
+  color: var(--grey);
+  font-size: 11px;
+  padding: 4px 12px;
+  border-left: 2px solid var(--green-dim);
+  margin-left: 2px;
+}
+
 .burner-warning {
   background: rgba(255, 176, 0, 0.08);
   border: 1px solid var(--amber);
@@ -354,4 +411,105 @@ body,
 .wallet-adapter-modal-title {
   color: var(--green) !important;
   font-family: var(--font) !important;
+}
+
+/* ── Mobile responsive ───────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .terminal {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .header {
+    gap: 10px;
+    padding-bottom: 8px;
+  }
+  .header-logo {
+    width: 44px;
+    height: 44px;
+  }
+  .header-title {
+    font-size: 14px;
+    letter-spacing: 0.04em;
+  }
+  .header-subtitle {
+    font-size: 10px;
+  }
+
+  .wallet-bar {
+    gap: 6px;
+    font-size: 11px;
+  }
+  .wallet-bar .wallet-adapter-button {
+    font-size: 11px !important;
+    padding: 4px 10px !important;
+  }
+  .wallet-address {
+    font-size: 10px;
+    word-break: break-all;
+    line-height: 1.4;
+  }
+
+  /* Two-column grid on mobile keeps each tile readable while halving height */
+  .stats-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .stat-box {
+    padding: 6px 8px;
+  }
+  .stat-label {
+    font-size: 9px;
+  }
+  .stat-value {
+    font-size: 12px;
+  }
+
+  /* Touch targets ≥44×44 — bump button + tab sizing */
+  .btn {
+    padding: 9px 14px;
+    font-size: 13px;
+  }
+  .primary-action {
+    padding: 12px 20px;
+    font-size: 15px;
+    width: 100%;
+  }
+  .tab {
+    padding: 9px 18px;
+    font-size: 13px;
+    flex: 1;
+  }
+  .tab-strip {
+    gap: 6px;
+  }
+
+  .stats-header {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .stats-summary {
+    font-size: 10px;
+    display: block;
+    width: 100%;
+    padding-top: 2px;
+  }
+
+  .stake-input {
+    font-size: 14px;     /* ≥16px prevents iOS zoom; 14px is acceptable trade */
+    padding: 9px 10px;
+  }
+
+  .log-pane {
+    min-height: 180px;
+    max-height: 40vh;
+  }
+  .log-line {
+    font-size: 11px;
+  }
+
+  .footer {
+    font-size: 9px;
+  }
 }

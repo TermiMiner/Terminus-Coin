@@ -29,21 +29,42 @@ export function localRelayerAdapter(relayer: BrowserKeypairWallet): BroadcastAda
 
 export interface SharedRelayerInfo {
   pubkey: PublicKey;
-  balance: number; // lamports
+  balance: number;          // lamports
+  // Optional KV-backed quota fields — present only when the operator
+  // has provisioned Vercel KV and set MAX_DAILY_LAMPORTS etc.
+  dailyCap?: number;        // lamports
+  dailySpent?: number;      // lamports
+  dailyRemaining?: number;  // lamports
+  wallet?: {
+    address: string;
+    topupsUsed: number;
+    topupsMax: number;
+    topupsRemaining: number;
+  };
 }
 
 /**
  * Probes /api/relayer-info. If the deployment has a configured shared relayer,
- * returns its pubkey + balance. If the endpoint isn't deployed (e.g., local
- * `npm run dev` without `vercel dev`) or the env vars aren't set, returns null.
+ * returns its pubkey + balance (and quota info when KV is enabled).
+ * Pass `walletPubkey` to include this wallet's remaining topup quota.
  */
-export async function fetchSharedRelayerInfo(): Promise<SharedRelayerInfo | null> {
+export async function fetchSharedRelayerInfo(walletPubkey?: PublicKey): Promise<SharedRelayerInfo | null> {
   try {
-    const res = await fetch("/api/relayer-info");
+    const url = walletPubkey
+      ? `/api/relayer-info?wallet=${walletPubkey.toBase58()}`
+      : `/api/relayer-info`;
+    const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
     if (!data?.pubkey) return null;
-    return { pubkey: new PublicKey(data.pubkey), balance: data.balance ?? 0 };
+    return {
+      pubkey: new PublicKey(data.pubkey),
+      balance: data.balance ?? 0,
+      dailyCap: data.dailyCap,
+      dailySpent: data.dailySpent,
+      dailyRemaining: data.dailyRemaining,
+      wallet: data.wallet,
+    };
   } catch {
     return null;
   }

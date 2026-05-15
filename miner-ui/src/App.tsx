@@ -75,22 +75,24 @@ export default function App() {
   const refreshWallets = () => setWalletVersion((v) => v + 1);
   void walletVersion;
 
-  // Probe the deployment for a configured shared relayer.
-  const [shared, setShared] = useState<SharedRelayerInfo | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetchSharedRelayerInfo().then((info) => { if (!cancelled) setShared(info); });
-    // Re-poll the shared balance every 30s for transparency
-    const id = setInterval(() => {
-      fetchSharedRelayerInfo().then((info) => { if (!cancelled) setShared(info); });
-    }, 30_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, []);
-
   // Pick which wallet drives mining: prefer Phantom if connected, else burner.
   const activeWallet: MinerWallet = phantom.publicKey
     ? { publicKey: phantom.publicKey, signTransaction: phantom.signTransaction }
     : burner;
+
+  // Probe the deployment for a configured shared relayer (also re-fetches
+  // when activeWallet changes so per-wallet quota info reflects the right key).
+  const [shared, setShared] = useState<SharedRelayerInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const probe = () => {
+      fetchSharedRelayerInfo(activeWallet.publicKey ?? undefined)
+        .then((info) => { if (!cancelled) setShared(info); });
+    };
+    probe();
+    const id = setInterval(probe, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [activeWallet.publicKey?.toBase58()]);
   const isBurner = !phantom.publicKey && !!burner.publicKey;
 
   // Live SOL balances for active wallet, burner, local relayer (polled every 5s)
@@ -360,6 +362,17 @@ export default function App() {
           <span className="wallet-address">
             {shared.pubkey.toBase58()} ({(shared.balance / 1e9).toFixed(4)} SOL)
           </span>
+          {/* Quota info — only present when KV is provisioned on the server */}
+          {shared.dailyRemaining !== undefined && (
+            <span className="wallet-address" title="Total relayer SOL outflow remaining today (resets daily)">
+              · {(shared.dailyRemaining / 1e9).toFixed(3)} SOL left today
+            </span>
+          )}
+          {shared.wallet && (
+            <span className="wallet-address" title="Topup grants remaining for this wallet — bootstrap is one-time per address">
+              · {shared.wallet.topupsRemaining}/{shared.wallet.topupsMax} free topups
+            </span>
+          )}
         </div>
       ) : (
         <div className="wallet-bar">

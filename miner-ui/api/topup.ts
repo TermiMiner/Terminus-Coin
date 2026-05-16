@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 
 const TOPUP_LAMPORTS = 15_000_000;        // 0.015 SOL
 const RECIPIENT_BALANCE_CAP = 8_000_000;  // refuse to top up if recipient already has more
@@ -10,7 +10,10 @@ const MAX_TOPUPS_PER_WALLET     = parseInt(process.env.MAX_TOPUPS_PER_WALLET    
 const MAX_TOPUPS_PER_IP_PER_HR  = parseInt(process.env.MAX_TOPUPS_PER_IP_PER_HR  ?? "5");
 const MAX_DAILY_LAMPORTS        = parseInt(process.env.MAX_DAILY_LAMPORTS        ?? "1000000000"); // 1 SOL
 
-const KV_ENABLED = !!process.env.KV_REST_API_URL && !!process.env.KV_REST_API_TOKEN;
+// Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
+const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
 function clientIp(req: VercelRequest): string {
   const hdr = req.headers["x-forwarded-for"];
@@ -56,7 +59,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // ── Quota checks (only if KV is configured) ────────────────────────
-    if (KV_ENABLED) {
+    if (kv) {
       const walletKey = `topup:wallet:${recipient}`;
       const ipKey = hourKey("topup:ip", ip);
       const spendKey = todayKey();
@@ -115,7 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
 
     // ── Record the grant (KV) ──────────────────────────────────────────
-    if (KV_ENABLED) {
+    if (kv) {
       const walletKey = `topup:wallet:${recipient}`;
       const ipKey = hourKey("topup:ip", ip);
       const spendKey = todayKey();

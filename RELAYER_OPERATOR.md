@@ -51,13 +51,13 @@ solana transfer <RELAYER_PUBKEY> <AMOUNT> --keypair <YOUR_FUNDING_WALLET> --url 
 
 Recommended starting balance for a new operator: **2–5 SOL on devnet**, **0.5–2 SOL on mainnet**. The daily cap (below) bounds how fast it can be drained.
 
-## Step 4: Provision Vercel KV (Upstash Redis)
+## Step 4: Provision Upstash Redis
 
-The KV store backs the per-wallet quota, per-IP rate limit, and daily-spend tracker. **Skipping this step means the relayer has no rate limits and can be drained quickly** — only fine for devnet experimentation, never for mainnet.
+The Redis store backs the per-wallet quota, per-IP rate limit, and daily-spend tracker. **Skipping this step means the relayer has no rate limits and can be drained quickly** — only fine for devnet experimentation, never for mainnet.
 
-1. In your Vercel project: **Storage** → **Create Database** → **Upstash KV** (or "Vercel KV", depending on which is offered)
+1. In your Vercel project: **Storage** → **Create Database** → pick **Upstash → Serverless DB (Redis, Vector, Queue, Search)** from the Marketplace and provision a Redis database
 2. Name it (e.g., `term-relayer-kv`)
-3. Click **Connect to Project** — Vercel auto-injects `KV_REST_API_URL` and `KV_REST_API_TOKEN`
+3. Click **Connect to Project** — the Marketplace integration auto-injects `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. (The legacy `KV_REST_API_URL`/`KV_REST_API_TOKEN` names from the old Vercel KV integration are also accepted as a fallback.)
 4. Free tier is fine: 10K commands/day covers thousands of mining sessions
 
 ## Step 5: Set environment variables
@@ -190,6 +190,6 @@ miner-ui/api/topup.ts
 miner-ui/api/relay.ts
 ```
 
-Each is self-contained — no shared imports. You can copy these into a minimal Vercel project (or another serverless host) and they'll work as long as you set the env vars above and bring `@solana/web3.js` and `@vercel/kv` as dependencies.
+Each is self-contained — no shared imports. You can copy these into a minimal Vercel project (or another serverless host) and they'll work as long as you set the env vars above and bring `@solana/web3.js` and `@upstash/redis` as dependencies.
 
 The UI doesn't care which relayer it talks to — it auto-detects based on the Vercel domain it's deployed under. If you want users to use *your* relayer specifically, point them at your Vercel URL.

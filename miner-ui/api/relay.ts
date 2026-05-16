@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Connection, Keypair, Transaction } from "@solana/web3.js";
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 
 const PROGRAM_ID                = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y";
 const TOKEN_PROGRAM             = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -14,7 +14,10 @@ const APPROX_RELAY_FEE_LAMPORTS = 10_000; // tx fee for the 2-signer claim — c
 const MAX_RELAYS_PER_IP_PER_HR  = parseInt(process.env.MAX_RELAYS_PER_IP_PER_HR  ?? "120"); // ~2/min
 const MAX_DAILY_LAMPORTS        = parseInt(process.env.MAX_DAILY_LAMPORTS        ?? "1000000000"); // 1 SOL
 
-const KV_ENABLED = !!process.env.KV_REST_API_URL && !!process.env.KV_REST_API_TOKEN;
+// Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
+const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
 function clientIp(req: VercelRequest): string {
   const hdr = req.headers["x-forwarded-for"];
@@ -56,7 +59,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // ── Per-IP + daily quota gate ──────────────────────────────────────
-    if (KV_ENABLED) {
+    if (kv) {
       const ipKey = hourKey("relay:ip", ip);
       const spendKey = todayKey();
       const [ipCount, todaySpent] = await Promise.all([
@@ -105,7 +108,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
 
     // Record the spend after successful broadcast
-    if (KV_ENABLED) {
+    if (kv) {
       const ipKey = hourKey("relay:ip", ip);
       const spendKey = todayKey();
       await Promise.all([

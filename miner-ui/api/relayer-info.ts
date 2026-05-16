@@ -1,10 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 
 const MAX_TOPUPS_PER_WALLET = parseInt(process.env.MAX_TOPUPS_PER_WALLET ?? "1");
 const MAX_DAILY_LAMPORTS    = parseInt(process.env.MAX_DAILY_LAMPORTS    ?? "1000000000");
-const KV_ENABLED = !!process.env.KV_REST_API_URL && !!process.env.KV_REST_API_TOKEN;
+
+// Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
+const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
 /**
  * GET /api/relayer-info[?wallet=<pubkey>]
@@ -26,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       balance,
     };
 
-    if (KV_ENABLED) {
+    if (kv) {
       // Daily-cap headroom (shared across topup + relay)
       const todayKey = `relayer:spend:${new Date().toISOString().slice(0, 10)}`;
       const todaySpent = Number((await kv.get<number>(todayKey)) ?? 0);

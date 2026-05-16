@@ -57,11 +57,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } else {
       out.kvEnabled = false;
-      // Diagnostic: which Redis-flavored env vars did Vercel actually inject?
-      // (Names only — values would leak the connection secret.)
-      out.envVarsSeen = Object.keys(process.env).filter((k) =>
-        /REDIS|UPSTASH|KV_/i.test(k)
-      );
     }
 
     res.setHeader("Cache-Control", "public, max-age=15");

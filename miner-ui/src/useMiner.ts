@@ -29,6 +29,35 @@ function ts(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
 
+// confirmTransaction throws "block height exceeded" when the client gives up
+// polling, NOT when the tx fails — it may have already landed. Re-query
+// signature status directly before treating expiration as failure.
+async function confirmOrCheckLanded(
+  connection: Connection,
+  sig: string,
+  blockhash: string,
+  lastValidBlockHeight: number,
+): Promise<void> {
+  try {
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    return;
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (!/block height exceeded|has expired/i.test(msg)) throw err;
+    const { value } = await connection.getSignatureStatuses([sig], { searchTransactionHistory: true });
+    const status = value?.[0];
+    if (status && !status.err && (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized")) {
+      return;
+    }
+    if (status?.err) {
+      const e = new Error(`Transaction failed on chain: ${JSON.stringify(status.err)}`);
+      (e as any).logs = (status as any).logs;
+      throw e;
+    }
+    throw err;
+  }
+}
+
 // Map common claim errors to user-readable strings. Falls back to a clipped
 // raw message so unknown errors still show something useful.
 function friendlyClaimError(err: any): string {
@@ -238,7 +267,7 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
           } else {
             sig = await connection!.sendRawTransaction(partial.serialize());
           }
-          await connection!.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+          await confirmOrCheckLanded(connection!, sig, blockhash, lastValidBlockHeight);
 
           // Reveal the bonus along with the claim — the slot-machine moment.
           const level: "info" | "success" = bonusBits >= 4 ? "success" : "info";

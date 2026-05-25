@@ -64,6 +64,30 @@ function mineNonceWithHash(lastHash: number[], user: anchor.web3.PublicKey, diff
   }
 }
 
+// Mine forward past valid nonces until we find one with bonus_bits == 0.
+// Useful for tests that need a deterministic no-bonus claim (e.g. forcing
+// net_reward to its minimum value).
+function mineNoBonusNonce(
+  lastHash: number[],
+  user: anchor.web3.PublicKey,
+  difficulty: anchor.BN | bigint,
+): { nonce: anchor.BN; hash: Uint8Array } {
+  const diff = typeof difficulty === "bigint" ? difficulty : BigInt(difficulty.toString());
+  const target = diff <= 1n ? MAX_U64 : MAX_U64 / diff;
+  const input = new Uint8Array(72);
+  input.set(lastHash, 8);
+  input.set(user.toBytes(), 40);
+  const view = new DataView(input.buffer);
+  for (let n = 0n; n < 10_000_000n; n++) {
+    view.setBigUint64(0, n, true);
+    const hash = keccak_256(input);
+    if (!meetsdifficulty(hash, target)) continue;
+    const { bonusBits } = luckyReward(3_400_000n, hash, diff);
+    if (bonusBits === 0) return { nonce: new anchor.BN(n.toString()), hash };
+  }
+  throw new Error("Could not find no-bonus valid nonce in 10M attempts");
+}
+
 // Mirrors the on-chain lucky_reward() — returns (final_reward, bonus_bits) for a given hash.
 const BONUS_CAP_TS = 8;
 function luckyReward(base: bigint, hash: Uint8Array, difficulty: anchor.BN | bigint): { reward: bigint; bonusBits: number } {
@@ -134,14 +158,19 @@ describe("terminuscoin – full feature suite", () => {
     )[0];
   }
 
-  async function doClaim(feePayer = wallet.payer): Promise<void> {
+  async function doClaim(
+    feePayer = wallet.payer,
+    relayerTipTerm: anchor.BN = new anchor.BN(0),
+    feePayerTokenAccount?: anchor.web3.PublicKey,
+  ): Promise<void> {
     const state = await program.account.globalState.fetch(globalStatePDA);
     const nonce = mineNonce(state.lastHash as number[], wallet.publicKey, state.difficulty);
     await program.methods
-      .claim(nonce)
+      .claim(nonce, relayerTipTerm)
       .accounts({
         feePayer: feePayer.publicKey,
         userTokenAccount,
+        feePayerTokenAccount: feePayerTokenAccount ?? userTokenAccount,
         authority: wallet.publicKey,
       })
       .signers(feePayer === wallet.payer ? [] : [feePayer])
@@ -171,8 +200,9 @@ describe("terminuscoin – full feature suite", () => {
       .rpc();
 
     // Deposit anti-Sybil bond (one-time per wallet) — SOL bond for the test wallet
+    // Self-funded: authority pays rent (rentPayer == authority).
     await program.methods.depositBond()
-      .accounts({ authority: wallet.publicKey })
+      .accounts({ authority: wallet.publicKey, rentPayer: wallet.publicKey })
       .rpc();
   });
 
@@ -213,8 +243,8 @@ describe("terminuscoin – full feature suite", () => {
   describe("claim", () => {
     it("rejects an invalid nonce", async () => {
       try {
-        await program.methods.claim(new anchor.BN(999_999_999))
-          .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+        await program.methods.claim(new anchor.BN(999_999_999), new anchor.BN(0))
+          .accounts({ feePayer: wallet.publicKey, userTokenAccount, feePayerTokenAccount: userTokenAccount, authority: wallet.publicKey })
           .rpc();
         throw new Error("Should have failed");
       } catch (err: any) {
@@ -230,8 +260,8 @@ describe("terminuscoin – full feature suite", () => {
       // Mine + capture the hash so we can predict the lucky-block multiplier
       const { nonce, hash } = mineNonceWithHash(state.lastHash as number[], wallet.publicKey, state.difficulty);
       await program.methods
-        .claim(nonce)
-        .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+        .claim(nonce, new anchor.BN(0))
+        .accounts({ feePayer: wallet.publicKey, userTokenAccount, feePayerTokenAccount: userTokenAccount, authority: wallet.publicKey })
         .rpc();
 
       const balAfter = await getAccount(provider.connection, userTokenAccount);
@@ -267,12 +297,12 @@ describe("terminuscoin – full feature suite", () => {
     it("rejects a replayed nonce", async () => {
       const state = await program.account.globalState.fetch(globalStatePDA);
       const nonce = mineNonce(state.lastHash as number[], wallet.publicKey, state.difficulty);
-      await program.methods.claim(nonce)
-        .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+      await program.methods.claim(nonce, new anchor.BN(0))
+        .accounts({ feePayer: wallet.publicKey, userTokenAccount, feePayerTokenAccount: userTokenAccount, authority: wallet.publicKey })
         .rpc();
       try {
-        await program.methods.claim(nonce)
-          .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+        await program.methods.claim(nonce, new anchor.BN(0))
+          .accounts({ feePayer: wallet.publicKey, userTokenAccount, feePayerTokenAccount: userTokenAccount, authority: wallet.publicKey })
           .rpc();
         throw new Error("Should have failed");
       } catch (err: any) {
@@ -330,14 +360,25 @@ describe("terminuscoin – full feature suite", () => {
       const relayerBalBefore = await provider.connection.getBalance(relayer.publicKey);
       const minerBalBefore = await provider.connection.getBalance(wallet.publicKey);
 
+      // Relayer needs its own ATA to satisfy `token::authority = fee_payer`
+      // on the new fee_payer_token_account, even with tip = 0 (no-op transfer).
+      // Relayer pays for its own ATA so we don't taint the miner's balance.
+      const relayerAta = await createAssociatedTokenAccount(
+        provider.connection, relayer, mint, relayer.publicKey
+      );
+      // Re-capture balances AFTER setup, just before the gasless claim.
+      const relayerBalForClaim = await provider.connection.getBalance(relayer.publicKey);
+      const minerBalForClaim = await provider.connection.getBalance(wallet.publicKey);
+
       const state = await program.account.globalState.fetch(globalStatePDA);
       const nonce = mineNonce(state.lastHash as number[], wallet.publicKey, state.difficulty);
 
       // Build tx manually so relayer is the actual Solana fee payer
-      const tx = await program.methods.claim(nonce)
+      const tx = await program.methods.claim(nonce, new anchor.BN(0))
         .accounts({
           feePayer: relayer.publicKey,
           userTokenAccount,
+          feePayerTokenAccount: relayerAta,
           authority: wallet.publicKey,
         })
         .transaction();
@@ -352,9 +393,9 @@ describe("terminuscoin – full feature suite", () => {
       const relayerBalAfter = await provider.connection.getBalance(relayer.publicKey);
       const minerBalAfter = await provider.connection.getBalance(wallet.publicKey);
 
-      // Relayer paid the fee, miner SOL balance unchanged
-      expect(relayerBalAfter).to.be.lessThan(relayerBalBefore);
-      expect(minerBalAfter).to.equal(minerBalBefore);
+      // Relayer paid the fee, miner SOL balance unchanged across the claim itself
+      expect(relayerBalAfter).to.be.lessThan(relayerBalForClaim);
+      expect(minerBalAfter).to.equal(minerBalForClaim);
     });
   });
 
@@ -483,8 +524,8 @@ describe("terminuscoin – full feature suite", () => {
       // Mine + capture hash so we can predict treasury delta with the lucky multiplier
       const { nonce, hash } = mineNonceWithHash(state.lastHash as number[], wallet.publicKey, state.difficulty);
       await program.methods
-        .claim(nonce)
-        .accounts({ feePayer: wallet.publicKey, userTokenAccount, authority: wallet.publicKey })
+        .claim(nonce, new anchor.BN(0))
+        .accounts({ feePayer: wallet.publicKey, userTokenAccount, feePayerTokenAccount: userTokenAccount, authority: wallet.publicKey })
         .rpc();
 
       const poolAfter = await program.account.stakePool.fetch(stakePoolPDA);
@@ -806,13 +847,19 @@ describe("terminuscoin – full feature suite", () => {
         await provider.connection.requestAirdrop(fresh.publicKey, 1_000_000_000)
       );
       // No deposit_bond — so claim should fail because bond_account doesn't exist
+      // Need fresh's own ATA to satisfy `token::authority = fee_payer` constraint
+      // (which is checked before the bond_account constraint).
+      const freshAta = await createAssociatedTokenAccount(
+        provider.connection, wallet.payer, mint, fresh.publicKey
+      );
       const state = await program.account.globalState.fetch(globalStatePDA);
       const nonce = mineNonce(state.lastHash as number[], fresh.publicKey, state.difficulty);
       try {
-        await program.methods.claim(nonce)
+        await program.methods.claim(nonce, new anchor.BN(0))
           .accounts({
             feePayer: fresh.publicKey,
-            userTokenAccount,
+            userTokenAccount: freshAta,
+            feePayerTokenAccount: freshAta,
             authority: fresh.publicKey,
           })
           .signers([fresh])
@@ -834,16 +881,17 @@ describe("terminuscoin – full feature suite", () => {
       );
       // Deposit bond
       await program.methods.depositBond()
-        .accounts({ authority: fresh.publicKey })
+        .accounts({ authority: fresh.publicKey, rentPayer: fresh.publicKey })
         .signers([fresh])
         .rpc();
       // Make a claim
       const state = await program.account.globalState.fetch(globalStatePDA);
       const nonce = mineNonce(state.lastHash as number[], fresh.publicKey, state.difficulty);
-      await program.methods.claim(nonce)
+      await program.methods.claim(nonce, new anchor.BN(0))
         .accounts({
           feePayer: fresh.publicKey,
           userTokenAccount: freshAta,
+          feePayerTokenAccount: freshAta,
           authority: fresh.publicKey,
         })
         .signers([fresh])
@@ -868,7 +916,7 @@ describe("terminuscoin – full feature suite", () => {
       const balBefore = await provider.connection.getBalance(fresh.publicKey);
       // Deposit bond (locks ~0.001 SOL of rent)
       await program.methods.depositBond()
-        .accounts({ authority: fresh.publicKey })
+        .accounts({ authority: fresh.publicKey, rentPayer: fresh.publicKey })
         .signers([fresh])
         .rpc();
       // Withdraw immediately — last_claim_time = 0, so cooldown has trivially passed
@@ -920,6 +968,7 @@ describe("terminuscoin – full feature suite", () => {
         .accounts({
           userTokenAccount: freshAta,
           authority: freshWallet.publicKey,
+          rentPayer: freshWallet.publicKey,
         })
         .signers([freshWallet])
         .rpc();
@@ -938,10 +987,11 @@ describe("terminuscoin – full feature suite", () => {
       const state = await program.account.globalState.fetch(globalStatePDA);
       const nonce = mineNonce(state.lastHash as number[], freshWallet.publicKey, state.difficulty);
       const balBefore = await getAccount(provider.connection, freshAta);
-      await program.methods.claim(nonce)
+      await program.methods.claim(nonce, new anchor.BN(0))
         .accounts({
           feePayer: freshWallet.publicKey,
           userTokenAccount: freshAta,
+          feePayerTokenAccount: freshAta,
           authority: freshWallet.publicKey,
         })
         .signers([freshWallet])
@@ -974,6 +1024,267 @@ describe("terminuscoin – full feature suite", () => {
         throw new Error("Should have failed");
       } catch (err: any) {
         expect(err.message).to.include("BondLocked");
+      }
+    });
+  });
+
+  // ─── TERM-fee relayer market ──────────────────────────────────────────────
+
+  describe("TERM-fee relayer market", () => {
+    // Each test sets up its own fresh miner + relayer pair to avoid coupling.
+
+    async function setupMiner(): Promise<{
+      miner: anchor.web3.Keypair;
+      minerAta: anchor.web3.PublicKey;
+    }> {
+      const miner = anchor.web3.Keypair.generate();
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(miner.publicKey, 1_000_000_000)
+      );
+      const minerAta = await createAssociatedTokenAccount(
+        provider.connection, wallet.payer, mint, miner.publicKey
+      );
+      await program.methods.depositBond()
+        .accounts({ authority: miner.publicKey, rentPayer: miner.publicKey })
+        .signers([miner])
+        .rpc();
+      return { miner, minerAta };
+    }
+
+    async function setupRelayer(): Promise<{
+      relayer: anchor.web3.Keypair;
+      relayerAta: anchor.web3.PublicKey;
+    }> {
+      const relayer = anchor.web3.Keypair.generate();
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(relayer.publicKey, 1_000_000_000)
+      );
+      const relayerAta = await createAssociatedTokenAccount(
+        provider.connection, wallet.payer, mint, relayer.publicKey
+      );
+      return { relayer, relayerAta };
+    }
+
+    it("transfers tip from miner ATA to relayer ATA atomically with claim", async () => {
+      const { miner, minerAta } = await setupMiner();
+      const { relayer, relayerAta } = await setupRelayer();
+
+      const minerBefore = await getAccount(provider.connection, minerAta);
+      const relayerBefore = await getAccount(provider.connection, relayerAta);
+
+      const TIP = new anchor.BN(500_000); // 0.5 TERM
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
+      await program.methods.claim(nonce, TIP)
+        .accounts({
+          feePayer: relayer.publicKey,
+          userTokenAccount: minerAta,
+          feePayerTokenAccount: relayerAta,
+          authority: miner.publicKey,
+        })
+        .signers([miner, relayer])
+        .rpc();
+
+      const minerAfter = await getAccount(provider.connection, minerAta);
+      const relayerAfter = await getAccount(provider.connection, relayerAta);
+
+      const minerDelta = BigInt(minerAfter.amount.toString()) - BigInt(minerBefore.amount.toString());
+      const relayerDelta = BigInt(relayerAfter.amount.toString()) - BigInt(relayerBefore.amount.toString());
+
+      // Miner received (net_reward - tip); relayer received tip
+      expect(relayerDelta.toString()).to.equal(TIP.toString());
+      expect(Number(minerDelta)).to.be.greaterThan(0); // miner still nets positive
+    });
+
+    it("rejects tip > MAX_TIP_TERM with TipExceedsCap", async () => {
+      const { miner, minerAta } = await setupMiner();
+      const { relayer, relayerAta } = await setupRelayer();
+
+      const TOO_BIG = new anchor.BN(5_000_001); // MAX_TIP_TERM = 5_000_000
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
+      try {
+        await program.methods.claim(nonce, TOO_BIG)
+          .accounts({
+            feePayer: relayer.publicKey,
+            userTokenAccount: minerAta,
+            feePayerTokenAccount: relayerAta,
+            authority: miner.publicKey,
+          })
+          .signers([miner, relayer])
+          .rpc();
+        throw new Error("Should have failed");
+      } catch (err: any) {
+        expect(err.message).to.include("TipExceedsCap");
+      }
+    });
+
+    it("rejects tip > net_reward with TipExceedsReward", async () => {
+      const { miner, minerAta } = await setupMiner();
+      const { relayer, relayerAta } = await setupRelayer();
+
+      // Force a no-bonus claim (net_reward ≈ 3.28 TERM at epoch 0) so a
+      // tip = MAX_TIP_TERM (5 TERM) is guaranteed to exceed net_reward.
+      const TIP = new anchor.BN(5_000_000);
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const { nonce } = mineNoBonusNonce(
+        state.lastHash as number[], miner.publicKey, state.difficulty,
+      );
+      try {
+        await program.methods.claim(nonce, TIP)
+          .accounts({
+            feePayer: relayer.publicKey,
+            userTokenAccount: minerAta,
+            feePayerTokenAccount: relayerAta,
+            authority: miner.publicKey,
+          })
+          .signers([miner, relayer])
+          .rpc();
+        throw new Error("Should have failed");
+      } catch (err: any) {
+        expect(err.message).to.include("TipExceedsReward");
+      }
+    });
+
+    it("rejects fee_payer_token_account not owned by fee_payer (constraint violation)", async () => {
+      const { miner, minerAta } = await setupMiner();
+      const { relayer } = await setupRelayer();
+
+      // Pass miner's ATA as fee_payer_token_account, but fee_payer = relayer.
+      // token::authority = fee_payer constraint should reject this.
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
+      try {
+        await program.methods.claim(nonce, new anchor.BN(100_000))
+          .accounts({
+            feePayer: relayer.publicKey,
+            userTokenAccount: minerAta,
+            feePayerTokenAccount: minerAta, // WRONG — owned by miner, not relayer
+            authority: miner.publicKey,
+          })
+          .signers([miner, relayer])
+          .rpc();
+        throw new Error("Should have failed");
+      } catch (err: any) {
+        expect(err.message).to.match(/ConstraintTokenOwner|ConstraintTokenMint|Token.*authority/i);
+      }
+    });
+
+    it("self-fund mode (fee_payer == authority) works with tip = 0", async () => {
+      const { miner, minerAta } = await setupMiner();
+      const balBefore = await getAccount(provider.connection, minerAta);
+
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
+      await program.methods.claim(nonce, new anchor.BN(0))
+        .accounts({
+          feePayer: miner.publicKey,
+          userTokenAccount: minerAta,
+          feePayerTokenAccount: minerAta, // miner is both fee_payer and recipient
+          authority: miner.publicKey,
+        })
+        .signers([miner])
+        .rpc();
+
+      const balAfter = await getAccount(provider.connection, minerAta);
+      const delta = BigInt(balAfter.amount.toString()) - BigInt(balBefore.amount.toString());
+      expect(Number(delta)).to.be.greaterThan(0);
+    });
+
+    it("first-claim via relayer works with 0-SOL miner (UserState payer = fee_payer)", async () => {
+      // The critical test for the UserState payer fix. A wallet with zero SOL
+      // must still be able to do its first claim through a relayer — the
+      // relayer pays for the UserState init in the same tx.
+      const miner = anchor.web3.Keypair.generate();
+      // NB: NOT airdropping — miner has 0 SOL.
+      const { relayer, relayerAta } = await setupRelayer();
+
+      // Relayer creates miner's ATA + bond (with rent_payer = relayer for refund)
+      const minerAta = await createAssociatedTokenAccount(
+        provider.connection, relayer, mint, miner.publicKey
+      );
+      await program.methods.depositBond()
+        .accounts({ authority: miner.publicKey, rentPayer: relayer.publicKey })
+        .signers([miner, relayer])
+        .rpc();
+
+      const minerBalBefore = await provider.connection.getBalance(miner.publicKey);
+      expect(minerBalBefore).to.equal(0); // sanity
+
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
+      await program.methods.claim(nonce, new anchor.BN(0))
+        .accounts({
+          feePayer: relayer.publicKey,
+          userTokenAccount: minerAta,
+          feePayerTokenAccount: relayerAta,
+          authority: miner.publicKey,
+        })
+        .signers([miner, relayer])
+        .rpc();
+
+      // Miner should have TERM but still 0 SOL (relayer paid all rent + fees)
+      const tokens = await getAccount(provider.connection, minerAta);
+      expect(Number(tokens.amount)).to.be.greaterThan(0);
+      const minerBalAfter = await provider.connection.getBalance(miner.publicKey);
+      expect(minerBalAfter).to.equal(0);
+    });
+
+    it("withdraw_bond refunds SOL to rent_payer (not authority) when sponsor paid", async () => {
+      const miner = anchor.web3.Keypair.generate();
+      // Miner has no SOL — sponsor pays bond rent.
+      const sponsor = anchor.web3.Keypair.generate();
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(sponsor.publicKey, 1_000_000_000)
+      );
+
+      const sponsorBalBefore = await provider.connection.getBalance(sponsor.publicKey);
+      const minerBalBefore = await provider.connection.getBalance(miner.publicKey);
+
+      // Sponsor pays the bond rent on miner's behalf
+      await program.methods.depositBond()
+        .accounts({ authority: miner.publicKey, rentPayer: sponsor.publicKey })
+        .signers([miner, sponsor])
+        .rpc();
+
+      // Miner withdraws bond (no claims, cooldown trivially passed)
+      // rent_payer is auto-resolved by Anchor from bond_account.rent_payer
+      await program.methods.withdrawBond()
+        .accounts({ authority: miner.publicKey })
+        .signers([miner])
+        .rpc();
+
+      const sponsorBalAfter = await provider.connection.getBalance(sponsor.publicKey);
+      const minerBalAfter = await provider.connection.getBalance(miner.publicKey);
+
+      // Sponsor got the rent refund (modest fee debit from deposit tx, then refund credit)
+      // Miner balance unchanged (still 0)
+      expect(minerBalAfter).to.equal(minerBalBefore); // miner started and ended at 0
+      // Sponsor's net loss is just the two transaction fees (~10K lamports), not the bond rent
+      const sponsorNetLoss = sponsorBalBefore - sponsorBalAfter;
+      expect(sponsorNetLoss).to.be.lessThan(50_000); // rent refunded
+    });
+
+    it("withdraw_bond rejects WrongRentPayer when wrong account is passed", async () => {
+      // Anchor auto-resolves rent_payer from bond_account, so to test the
+      // has_one check we have to construct the tx manually with a wrong
+      // rent_payer override.
+      const { miner } = await setupMiner();
+      const evil = anchor.web3.Keypair.generate();
+
+      // Build manually with evil's pubkey as rent_payer
+      try {
+        await program.methods.withdrawBond()
+          .accounts({
+            authority: miner.publicKey,
+            rentPayer: evil.publicKey, // not what bond_account recorded
+          } as any)
+          .signers([miner])
+          .rpc();
+        throw new Error("Should have failed");
+      } catch (err: any) {
+        // has_one enforces match — expect WrongRentPayer or a constraint error
+        expect(err.message).to.match(/WrongRentPayer|ConstraintHasOne/i);
       }
     });
   });

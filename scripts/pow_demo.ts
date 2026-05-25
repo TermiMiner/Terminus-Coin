@@ -156,10 +156,11 @@ async function main() {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
     console.log(` found nonce in ${attempts.toLocaleString()} attempts (${elapsed}s)`);
 
-    await program.methods.claim(nonce)
+    await program.methods.claim(nonce, new anchor.BN(0))
       .accounts({
         feePayer: wallet.publicKey,
         userTokenAccount,
+        feePayerTokenAccount: userTokenAccount,
         authority: wallet.publicKey,
       })
       .rpc();

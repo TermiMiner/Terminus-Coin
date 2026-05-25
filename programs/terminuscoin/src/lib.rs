@@ -87,6 +87,14 @@ const TERM_BOND_AMOUNT: u64 = 20_000_000;             // 20 TERM (with 6 decimal
 const BOND_KIND_SOL: u8 = 0;
 const BOND_KIND_TERM: u8 = 1;
 
+// ─── Relayer tip cap ──────────────────────────────────────────────────────────
+// Hard ceiling on relayer_tip_term per claim. Pays for ~1 SOL of gas at TERM
+// prices in the $0.01–$0.10 range. Set deliberately tight: cap=5 binds on ~50%
+// of claims by reward distribution, forcing relayers to compete on cost
+// rather than capture upside on the rare jackpots. Constant (not governance-
+// settable) so authority can never coerce miners into paying more.
+const MAX_TIP_TERM: u64 = 5_000_000;                  // 5 TERM
+
 // ─── Phase 2 activation ───────────────────────────────────────────────────────
 // At year 1, the authority-set rate limit becomes redundant: the bond plus
 // PoW already deter spam, and centralized rate limiting becomes a censorship
@@ -191,8 +199,9 @@ pub mod terminuscoin {
 
     // ── claim ─────────────────────────────────────────────────────────────────
 
-    pub fn claim(ctx: Context<Claim>, nonce: u64) -> Result<()> {
+    pub fn claim(ctx: Context<Claim>, nonce: u64, relayer_tip_term: u64) -> Result<()> {
         require!(!ctx.accounts.global_state.paused, ErrorCode::ContractPaused);
+        require!(relayer_tip_term <= MAX_TIP_TERM, ErrorCode::TipExceedsCap);
 
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
@@ -244,6 +253,12 @@ pub mod terminuscoin {
         let net_reward = base_reward
             .saturating_sub(burn_amount)
             .saturating_sub(treasury_amount);
+
+        // ── Relayer tip bound ────────────────────────────────────────────────
+        // Tip is paid out of net_reward (post-burn, post-treasury). Capping
+        // at net_reward guarantees miner receives ≥0 even on minimum-luck
+        // claims, while MAX_TIP_TERM caps the upside on jackpot blocks.
+        require!(relayer_tip_term <= net_reward, ErrorCode::TipExceedsReward);
 
         // ── Supply cap ────────────────────────────────────────────────────────
         // Reserve treasury share + fixed fee now (if stakers exist) so
@@ -345,6 +360,31 @@ pub mod terminuscoin {
             ),
             burn_amount,
         )?;
+
+        // ── Relayer tip (TERM-fee market) ─────────────────────────────────────
+        // Atomic with mint: miner authorises a token::transfer from their ATA
+        // to the fee_payer's ATA in the same instruction that produces the
+        // tokens. No counterparty risk — relayer either gets paid in TERM or
+        // the whole tx reverts and they're out only the gas they would have
+        // paid anyway. Skipped entirely for self-funded claims (tip = 0).
+        if relayer_tip_term > 0 {
+            token::transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.user_token_account.to_account_info(),
+                        to: ctx.accounts.fee_payer_token_account.to_account_info(),
+                        authority: ctx.accounts.authority.to_account_info(),
+                    },
+                ),
+                relayer_tip_term,
+            )?;
+            emit!(TipPaid {
+                miner: user_key,
+                relayer: ctx.accounts.fee_payer.key(),
+                tip_term: relayer_tip_term,
+            });
+        }
 
         emit!(ClaimMined {
             miner: user_key,
@@ -699,6 +739,7 @@ pub mod terminuscoin {
         let bond = &mut ctx.accounts.bond_account;
         bond.kind = BOND_KIND_SOL;
         bond.term_amount = 0;
+        bond.rent_payer = ctx.accounts.rent_payer.key();
         emit!(BondDeposited {
             miner: ctx.accounts.authority.key(),
             kind: BOND_KIND_SOL,
@@ -717,6 +758,7 @@ pub mod terminuscoin {
         let bond = &mut ctx.accounts.bond_account;
         bond.kind = BOND_KIND_TERM;
         bond.term_amount = TERM_BOND_AMOUNT;
+        bond.rent_payer = ctx.accounts.rent_payer.key();
 
         token::transfer(
             CpiContext::new(
@@ -981,8 +1023,9 @@ pub struct BondAccount {
     pub last_claim_time: i64, // 8  — last activity, gates withdrawal cooldown
     pub kind: u8,             // 1  — 0 = SOL bond, 1 = TERM bond
     pub term_amount: u64,     // 8  — TERM held in vault (0 unless kind = TERM)
+    pub rent_payer: Pubkey,   // 32 — wallet that funded account rent; must match on withdraw
 }
-// borsh total: 17 bytes → space = 8 + 17 = 25
+// borsh total: 49 bytes → space = 8 + 49 = 57
 
 #[account]
 #[derive(Default)]
@@ -1128,6 +1171,20 @@ pub struct Claim<'info> {
     #[account(mut, token::mint = mint)]
     pub user_token_account: Account<'info, TokenAccount>,
 
+    /// Relayer's TERM ATA — receives `relayer_tip_term` paid by the miner.
+    /// Constraint enforces that whoever signed as `fee_payer` is also the
+    /// authority on the destination account: prevents a miner from misrouting
+    /// tip TERM to a third party while a relayer pays the gas.
+    ///
+    /// For self-funded claims (fee_payer == authority and tip = 0), this can
+    /// safely be the miner's own ATA — the transfer is skipped when tip == 0.
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = fee_payer,
+    )]
+    pub fee_payer_token_account: Account<'info, TokenAccount>,
+
     /// CHECK: PDA mint authority — validated by seeds constraint
     #[account(seeds = [b"mint_authority"], bump)]
     pub mint_authority: UncheckedAccount<'info>,
@@ -1141,9 +1198,14 @@ pub struct Claim<'info> {
     /// Per-user state (rate limit + freeze). Created on first claim, paid by
     /// the authority (not fee_payer) so a malicious miner can't drain a relayer
     /// of rent across many fake wallets.
+    ///
+    /// `payer = fee_payer` (NOT authority) so a 0-SOL wallet can be onboarded
+    /// by a relayer. UserState rent (~0.001 SOL) becomes a permanent leak to
+    /// fee_payer — UserState has no close instruction, so the cost is bounded
+    /// customer-acquisition expense the bootstrap relayer eats.
     #[account(
         init_if_needed,
-        payer = authority,
+        payer = fee_payer,
         space = 8 + 16,
         seeds = [b"user_state", authority.key().as_ref()],
         bump
@@ -1329,15 +1391,23 @@ pub struct AuthorityOnly<'info> {
 pub struct DepositBond<'info> {
     #[account(
         init,
-        payer = authority,
-        space = 8 + 17,
+        payer = rent_payer,
+        space = 8 + 49,
         seeds = [b"bond", authority.key().as_ref()],
         bump
     )]
     pub bond_account: Account<'info, BondAccount>,
 
-    #[account(mut)]
+    /// The miner — signs to authorise bond creation on their behalf, but
+    /// does NOT pay rent. The authority's pubkey seeds the PDA, ensuring
+    /// the bond is uniquely bound to this wallet.
     pub authority: Signer<'info>,
+
+    /// Whoever funds the ~0.001 SOL of account rent. May be the miner
+    /// (self-funded) or a sponsor (one-time gift / bootstrap relayer).
+    /// Recorded in bond_account.rent_payer and refunded on withdraw.
+    #[account(mut)]
+    pub rent_payer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
 }
@@ -1346,8 +1416,8 @@ pub struct DepositBond<'info> {
 pub struct DepositBondTerm<'info> {
     #[account(
         init,
-        payer = authority,
-        space = 8 + 17,
+        payer = rent_payer,
+        space = 8 + 49,
         seeds = [b"bond", authority.key().as_ref()],
         bump
     )]
@@ -1363,17 +1433,29 @@ pub struct DepositBondTerm<'info> {
     #[account(mut)]
     pub user_token_account: Account<'info, TokenAccount>,
 
+    /// The miner — signs to transfer TERM from user_token_account into the
+    /// shared vault. The TERM bond itself comes from the authority, not the
+    /// rent_payer.
     #[account(mut)]
     pub authority: Signer<'info>,
+
+    /// Whoever funds the ~0.001 SOL of account rent. Recorded and refunded
+    /// on withdraw. The 20 TERM bond is still paid by the authority.
+    #[account(mut)]
+    pub rent_payer: Signer<'info>,
+
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct WithdrawBondTerm<'info> {
+    /// Closes to rent_payer (refunding SOL rent). The bonded TERM is sent
+    /// separately via token::transfer to the miner's user_token_account.
     #[account(
         mut,
-        close = authority,
+        close = rent_payer,
+        has_one = rent_payer @ ErrorCode::WrongRentPayer,
         seeds = [b"bond", authority.key().as_ref()],
         bump
     )]
@@ -1393,8 +1475,14 @@ pub struct WithdrawBondTerm<'info> {
     #[account(seeds = [b"bond_vault_authority"], bump)]
     pub bond_vault_authority: UncheckedAccount<'info>,
 
-    #[account(mut)]
+    /// The miner — must sign. TERM bond is returned to user_token_account.
     pub authority: Signer<'info>,
+
+    /// CHECK: pubkey-only; must match bond_account.rent_payer. Receives the
+    /// SOL rent refund on close.
+    #[account(mut)]
+    pub rent_payer: UncheckedAccount<'info>,
+
     pub token_program: Program<'info, Token>,
 }
 
@@ -1433,16 +1521,29 @@ pub struct InitializeBondVault<'info> {
 
 #[derive(Accounts)]
 pub struct WithdrawBond<'info> {
+    /// Closes to rent_payer — refunding the SOL rent to whoever originally
+    /// funded the account. has_one enforces that the rent_payer account
+    /// passed in matches what was recorded at deposit time, so a griefer
+    /// can't redirect the refund to themselves.
     #[account(
         mut,
-        close = authority,
+        close = rent_payer,
+        has_one = rent_payer @ ErrorCode::WrongRentPayer,
         seeds = [b"bond", authority.key().as_ref()],
         bump
     )]
     pub bond_account: Account<'info, BondAccount>,
 
-    #[account(mut)]
+    /// The miner — must sign to authorise the withdrawal. Cooldown gating
+    /// is enforced in the handler against last_claim_time.
     pub authority: Signer<'info>,
+
+    /// CHECK: pubkey-only; must match bond_account.rent_payer (enforced via
+    /// has_one). Receives the rent refund when the bond account is closed.
+    /// Does NOT need to sign — the miner can withdraw at any time after
+    /// cooldown, returning rent to whoever originally funded it.
+    #[account(mut)]
+    pub rent_payer: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1534,6 +1635,13 @@ pub struct ClaimMined {
 }
 
 #[event]
+pub struct TipPaid {
+    pub miner: Pubkey,
+    pub relayer: Pubkey,
+    pub tip_term: u64,
+}
+
+#[event]
 pub struct DifficultyAdjusted {
     pub old: u64,
     pub new: u64,
@@ -1620,4 +1728,10 @@ pub enum ErrorCode {
     NotPendingAuthority,
     #[msg("No pending transfer to accept")]
     NoPendingTransfer,
+    #[msg("Relayer tip exceeds miner's net reward for this claim")]
+    TipExceedsReward,
+    #[msg("Relayer tip exceeds protocol max cap (MAX_TIP_TERM)")]
+    TipExceedsCap,
+    #[msg("Rent payer does not match the rent_payer recorded on the bond account")]
+    WrongRentPayer,
 }

@@ -345,6 +345,19 @@
           "writable": true
         },
         {
+          "name": "fee_payer_token_account",
+          "docs": [
+            "Relayer's TERM ATA — receives `relayer_tip_term` paid by the miner.",
+            "Constraint enforces that whoever signed as `fee_payer` is also the",
+            "authority on the destination account: prevents a miner from misrouting",
+            "tip TERM to a third party while a relayer pays the gas.",
+            "",
+            "For self-funded claims (fee_payer == authority and tip = 0), this can",
+            "safely be the miner's own ATA — the transfer is skipped when tip == 0."
+          ],
+          "writable": true
+        },
+        {
           "name": "mint_authority",
           "pda": {
             "seeds": [
@@ -385,7 +398,12 @@
           "docs": [
             "Per-user state (rate limit + freeze). Created on first claim, paid by",
             "the authority (not fee_payer) so a malicious miner can't drain a relayer",
-            "of rent across many fake wallets."
+            "of rent across many fake wallets.",
+            "",
+            "`payer = fee_payer` (NOT authority) so a 0-SOL wallet can be onboarded",
+            "by a relayer. UserState rent (~0.001 SOL) becomes a permanent leak to",
+            "fee_payer — UserState has no close instruction, so the cost is bounded",
+            "customer-acquisition expense the bootstrap relayer eats."
           ],
           "writable": true,
           "pda": {
@@ -450,6 +468,10 @@
       "args": [
         {
           "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "relayer_tip_term",
           "type": "u64"
         }
       ]
@@ -935,6 +957,20 @@
         },
         {
           "name": "authority",
+          "docs": [
+            "The miner — signs to authorise bond creation on their behalf, but",
+            "does NOT pay rent. The authority's pubkey seeds the PDA, ensuring",
+            "the bond is uniquely bound to this wallet."
+          ],
+          "signer": true
+        },
+        {
+          "name": "rent_payer",
+          "docs": [
+            "Whoever funds the ~0.001 SOL of account rent. May be the miner",
+            "(self-funded) or a sponsor (one-time gift / bootstrap relayer).",
+            "Recorded in bond_account.rent_payer and refunded on withdraw."
+          ],
           "writable": true,
           "signer": true
         },
@@ -1013,6 +1049,20 @@
         },
         {
           "name": "authority",
+          "docs": [
+            "The miner — signs to transfer TERM from user_token_account into the",
+            "shared vault. The TERM bond itself comes from the authority, not the",
+            "rent_payer."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "rent_payer",
+          "docs": [
+            "Whoever funds the ~0.001 SOL of account rent. Recorded and refunded",
+            "on withdraw. The 20 TERM bond is still paid by the authority."
+          ],
           "writable": true,
           "signer": true
         },
@@ -2202,6 +2252,12 @@
       "accounts": [
         {
           "name": "bond_account",
+          "docs": [
+            "Closes to rent_payer — refunding the SOL rent to whoever originally",
+            "funded the account. has_one enforces that the rent_payer account",
+            "passed in matches what was recorded at deposit time, so a griefer",
+            "can't redirect the refund to themselves."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -2223,8 +2279,23 @@
         },
         {
           "name": "authority",
-          "writable": true,
+          "docs": [
+            "The miner — must sign to authorise the withdrawal. Cooldown gating",
+            "is enforced in the handler against last_claim_time."
+          ],
           "signer": true
+        },
+        {
+          "name": "rent_payer",
+          "docs": [
+            "has_one). Receives the rent refund when the bond account is closed.",
+            "Does NOT need to sign — the miner can withdraw at any time after",
+            "cooldown, returning rent to whoever originally funded it."
+          ],
+          "writable": true,
+          "relations": [
+            "bond_account"
+          ]
         }
       ],
       "args": []
@@ -2244,6 +2315,10 @@
       "accounts": [
         {
           "name": "bond_account",
+          "docs": [
+            "Closes to rent_payer (refunding SOL rent). The bonded TERM is sent",
+            "separately via token::transfer to the miner's user_token_account."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -2329,8 +2404,20 @@
         },
         {
           "name": "authority",
-          "writable": true,
+          "docs": [
+            "The miner — must sign. TERM bond is returned to user_token_account."
+          ],
           "signer": true
+        },
+        {
+          "name": "rent_payer",
+          "docs": [
+            "SOL rent refund on close."
+          ],
+          "writable": true,
+          "relations": [
+            "bond_account"
+          ]
         },
         {
           "name": "token_program",
@@ -2500,6 +2587,19 @@
       ]
     },
     {
+      "name": "TipPaid",
+      "discriminator": [
+        2,
+        156,
+        36,
+        89,
+        38,
+        63,
+        2,
+        2
+      ]
+    },
+    {
       "name": "Unstaked",
       "discriminator": [
         27,
@@ -2611,6 +2711,21 @@
       "code": 6016,
       "name": "NoPendingTransfer",
       "msg": "No pending transfer to accept"
+    },
+    {
+      "code": 6017,
+      "name": "TipExceedsReward",
+      "msg": "Relayer tip exceeds miner's net reward for this claim"
+    },
+    {
+      "code": 6018,
+      "name": "TipExceedsCap",
+      "msg": "Relayer tip exceeds protocol max cap (MAX_TIP_TERM)"
+    },
+    {
+      "code": 6019,
+      "name": "WrongRentPayer",
+      "msg": "Rent payer does not match the rent_payer recorded on the bond account"
     }
   ],
   "types": [
@@ -2630,6 +2745,10 @@
           {
             "name": "term_amount",
             "type": "u64"
+          },
+          {
+            "name": "rent_payer",
+            "type": "pubkey"
           }
         ]
       }
@@ -2952,6 +3071,26 @@
                 4
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TipPaid",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "miner",
+            "type": "pubkey"
+          },
+          {
+            "name": "relayer",
+            "type": "pubkey"
+          },
+          {
+            "name": "tip_term",
+            "type": "u64"
           }
         ]
       }

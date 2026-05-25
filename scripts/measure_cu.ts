@@ -112,10 +112,11 @@ async function main() {
 
   // Build the transaction with explicit CU budget (mirrors miner-ui)
   const cuLimitIx = ComputeBudgetProgram.setComputeUnitLimit({ units: CU_LIMIT });
-  const tx = await program.methods.claim(nonce)
+  const tx = await program.methods.claim(nonce, new anchor.BN(0))
     .accounts({
       feePayer: wallet.publicKey,
       userTokenAccount,
+      feePayerTokenAccount: userTokenAccount,
       authority: wallet.publicKey,
     })
     .preInstructions([cuLimitIx])

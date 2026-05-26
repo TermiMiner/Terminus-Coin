@@ -64,6 +64,33 @@ function mineNonceWithHash(lastHash: number[], user: anchor.web3.PublicKey, diff
   }
 }
 
+// Mine forward past valid nonces until we find one with bonus_bits >= min.
+// Useful for tests that need a deterministic bonus-block claim (e.g. proving
+// the cap binds with a positive miner_delta).
+function mineBonusNonce(
+  lastHash: number[],
+  user: anchor.web3.PublicKey,
+  difficulty: anchor.BN | bigint,
+  minBonusBits: number = 1,
+): { nonce: anchor.BN; hash: Uint8Array; bonusBits: number } {
+  const diff = typeof difficulty === "bigint" ? difficulty : BigInt(difficulty.toString());
+  const target = diff <= 1n ? MAX_U64 : MAX_U64 / diff;
+  const input = new Uint8Array(72);
+  input.set(lastHash, 8);
+  input.set(user.toBytes(), 40);
+  const view = new DataView(input.buffer);
+  for (let n = 0n; n < 10_000_000n; n++) {
+    view.setBigUint64(0, n, true);
+    const hash = keccak_256(input);
+    if (!meetsdifficulty(hash, target)) continue;
+    const { bonusBits } = luckyReward(3_400_000n, hash, diff);
+    if (bonusBits >= minBonusBits) {
+      return { nonce: new anchor.BN(n.toString()), hash, bonusBits };
+    }
+  }
+  throw new Error(`Could not find nonce with bonus_bits >= ${minBonusBits} in 10M attempts`);
+}
+
 // Mine forward past valid nonces until we find one with bonus_bits == 0.
 // Useful for tests that need a deterministic no-bonus claim (e.g. forcing
 // net_reward to its minimum value).
@@ -1263,6 +1290,46 @@ describe("terminuscoin – full feature suite", () => {
       // Sponsor's net loss is just the two transaction fees (~10K lamports), not the bond rent
       const sponsorNetLoss = sponsorBalBefore - sponsorBalAfter;
       expect(sponsorNetLoss).to.be.lessThan(50_000); // rent refunded
+    });
+
+    it("cap binds: tip = MAX_TIP_TERM on a bonus-block claim succeeds, miner still nets positive", async () => {
+      const { miner, minerAta } = await setupMiner();
+      const { relayer, relayerAta } = await setupRelayer();
+
+      // Need a bonus_bits >= 1 claim so net_reward > MAX_TIP_TERM.
+      // At epoch 0, bonus_bits=1 → net ~6.58 TERM > 5 TERM tip.
+      const state = await program.account.globalState.fetch(globalStatePDA);
+      const { nonce, bonusBits } = mineBonusNonce(
+        state.lastHash as number[], miner.publicKey, state.difficulty, 1,
+      );
+
+      const minerBefore = await getAccount(provider.connection, minerAta);
+      const relayerBefore = await getAccount(provider.connection, relayerAta);
+
+      const TIP = new anchor.BN(5_000_000); // MAX_TIP_TERM exactly
+      await program.methods.claim(nonce, TIP)
+        .accounts({
+          feePayer: relayer.publicKey,
+          userTokenAccount: minerAta,
+          feePayerTokenAccount: relayerAta,
+          authority: miner.publicKey,
+        })
+        .signers([miner, relayer])
+        .rpc();
+
+      const minerAfter = await getAccount(provider.connection, minerAta);
+      const relayerAfter = await getAccount(provider.connection, relayerAta);
+
+      const minerDelta = BigInt(minerAfter.amount.toString()) - BigInt(minerBefore.amount.toString());
+      const relayerDelta = BigInt(relayerAfter.amount.toString()) - BigInt(relayerBefore.amount.toString());
+
+      // Relayer got exactly the cap
+      expect(relayerDelta.toString()).to.equal(TIP.toString());
+      // Miner still nets positive (net_reward - tip > 0)
+      expect(Number(minerDelta)).to.be.greaterThan(0);
+      // Sanity: bonus_bits=1 gives net ~6.58 TERM, so miner_delta ~1.58 TERM
+      expect(Number(minerDelta)).to.be.lessThan(50_000_000); // ceiling check on EV
+      console.log(`        bonus_bits=${bonusBits} miner_delta=${minerDelta} relayer_delta=${relayerDelta}`);
     });
 
     it("withdraw_bond rejects WrongRentPayer when wrong account is passed", async () => {

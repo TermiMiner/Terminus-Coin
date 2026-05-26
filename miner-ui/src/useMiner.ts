@@ -206,36 +206,68 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
         try {
           const userAta = getAssociatedTokenAddressSync(MINT_PDA, wallet.publicKey!);
 
-          const createAtaIx = createAssociatedTokenAccountIdempotentInstruction(
-            wallet.publicKey!,
+          // Pick fee payer: broadcaster if configured (gasless mining), else wallet itself.
+          const feePayerKey = broadcaster?.pubkey ?? wallet.publicKey!;
+          const feePayerIsWallet = feePayerKey.equals(wallet.publicKey!);
+          const feePayerAta = feePayerIsWallet
+            ? userAta
+            : getAssociatedTokenAddressSync(MINT_PDA, feePayerKey);
+
+          // User's ATA — paid by fee_payer (so a 0-SOL wallet can be onboarded
+          // by a relayer). Idempotent: no-op if already exists.
+          const createUserAtaIx = createAssociatedTokenAccountIdempotentInstruction(
+            feePayerKey,
             userAta,
             wallet.publicKey!,
             MINT_PDA
           );
 
+          // Relayer's ATA — needed to satisfy `token::authority = fee_payer`
+          // on the claim's fee_payer_token_account. Only included when
+          // fee_payer != authority (gasless mode). Relayer pays for its own ATA.
+          const createFeePayerAtaIx = feePayerIsWallet
+            ? null
+            : createAssociatedTokenAccountIdempotentInstruction(
+                feePayerKey,
+                feePayerAta,
+                feePayerKey,
+                MINT_PDA
+              );
+
           // Anti-Sybil bond: deposit it the first time this wallet ever mines.
-          // ~0.001 SOL of rent gets locked; recoverable later via withdraw_bond
-          // after BOND_WITHDRAW_COOLDOWN seconds since last claim.
+          // ~0.001 SOL of rent gets locked; recoverable later via withdraw_bond.
+          // Detect old-format bonds (devnet upgrade artifact): expected size is
+          // 57 bytes (8 disc + 49 borsh). Anything else means a stranded bond
+          // from before the rent_payer field was added.
           const bondPDA = deriveBondPDA(wallet.publicKey!);
           const bondInfo = await connection!.getAccountInfo(bondPDA);
+          if (bondInfo && bondInfo.data.length !== 57) {
+            appendLog("error", `[${ts()}] Old-format bond detected at this address. The program was upgraded; the old bond's 0.001 SOL is stranded. Please use a fresh wallet to mine.`);
+            setStatus("error");
+            return;
+          }
           let depositBondIx: any = null;
           if (!bondInfo) {
             depositBondIx = await (program.methods as any)
               .depositBond()
-              .accounts({ authority: wallet.publicKey })
+              .accounts({
+                authority: wallet.publicKey,
+                rentPayer: feePayerKey, // relayer pays bond rent in gasless mode
+              })
               .instruction();
             appendLog("dim", `[${ts()}] First mine — also depositing 0.001 SOL bond.`);
           }
 
-          // Pick fee payer: broadcaster if configured (gasless mining), else wallet itself.
-          const feePayerKey = broadcaster?.pubkey ?? wallet.publicKey!;
-
+          // tip = 0 for now (gasless mining via SOL relayer or self-fund).
+          // The TERM-fee relayer market with positive tips is a follow-up
+          // wired up at the UI level when relayer routing is added.
           const claimIx = await (program.methods as any)
-            .claim(new BN(nonce))
+            .claim(new BN(nonce), new BN(0))
             .accounts({
               feePayer: feePayerKey,
               mint: MINT_PDA,
               userTokenAccount: userAta,
+              feePayerTokenAccount: feePayerAta,
               authority: wallet.publicKey,
             })
             .instruction();
@@ -243,20 +275,22 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
           const { blockhash, lastValidBlockHeight } =
             await connection!.getLatestBlockhash("confirmed");
 
-          // CU budget: claim ~34K, ATA creation ~25K, bond deposit ~5K when present.
+          // CU budget: claim ~34K, ATA creation ~25K each, bond deposit ~5K when present.
           // Default 200K is wasteful and degrades scheduling.
-          const cuUnits = depositBondIx ? 90_000 : 70_000;
+          const cuUnits =
+            (depositBondIx ? 95_000 : 75_000) +
+            (createFeePayerAtaIx ? 25_000 : 0);
           const cuLimitIx = ComputeBudgetProgram.setComputeUnitLimit({ units: cuUnits });
 
           const tx = new Transaction({
             recentBlockhash: blockhash,
             feePayer: feePayerKey,
           });
-          if (depositBondIx) {
-            tx.add(cuLimitIx, createAtaIx, depositBondIx, claimIx);
-          } else {
-            tx.add(cuLimitIx, createAtaIx, claimIx);
-          }
+          tx.add(cuLimitIx);
+          if (createFeePayerAtaIx) tx.add(createFeePayerAtaIx);
+          tx.add(createUserAtaIx);
+          if (depositBondIx) tx.add(depositBondIx);
+          tx.add(claimIx);
 
           // Authority signs first; broadcaster (local relayer or shared
           // server-side relayer) completes signing + broadcast.

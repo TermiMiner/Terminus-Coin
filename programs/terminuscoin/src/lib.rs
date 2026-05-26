@@ -1190,8 +1190,6 @@ pub struct Claim<'info> {
     pub mint_authority: UncheckedAccount<'info>,
 
     /// The miner. Their pubkey is baked into the PoW hash to prevent front-running.
-    /// Also the payer for first-claim user_state rent — prevents griefing relayers
-    /// who would otherwise pay rent on attacker-generated wallets.
     #[account(mut)]
     pub authority: Signer<'info>,
 

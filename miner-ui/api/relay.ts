@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Connection, Keypair, Transaction } from "@solana/web3.js";
 import { Redis } from "@upstash/redis";
+import { waitUntil } from "@vercel/functions";
 import { createHash } from "node:crypto";
 
 const PROGRAM_ID                = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y";
@@ -68,7 +69,10 @@ function maxPossibleCost(tx: Transaction): number {
  *      Token program, ATA program, and ComputeBudget. No arbitrary signing.
  *   2. tx.feePayer must be the relayer (rejects misdirected requests).
  *   3. Per-IP rate limit (KV)  — max MAX_RELAYS_PER_IP_PER_HR per hour.
- *   4. Daily spend cap (KV)    — shared with /api/topup. ~10K lamports per relay.
+ *   4. Daily spend cap (KV)    — shared with /api/topup. Per-tx cost is
+ *      measured post-confirmation (first claims with bond+ATA rent can
+ *      cost ~5M lamports; repeat claims ~10K). Pre-broadcast reservation
+ *      uses a conservative upper bound to avoid concurrent overshoot.
  *
  * On-chain rate_limit_seconds already caps per-wallet claim rate, so we don't
  * also enforce per-wallet quotas here.
@@ -165,14 +169,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Async reconciliation: actual cost vs estimate ──────────────────
     // Wait for confirmation, read the tx's own fee_payer balance delta
     // (concurrency-safe — unaffected by other relays in flight), then
-    // adjust KV by the difference. Worst case (function dies before this
-    // completes): KV holds the estimate. Fail-safe direction.
+    // adjust KV by the difference. waitUntil() tells Vercel to keep the
+    // function alive past res.json() until this completes — without it,
+    // the runtime is allowed to freeze/kill the function and the
+    // reconciliation never runs.
     if (kv && reservedCost > 0) {
-      void (async () => {
+      const txBlockhash = tx.recentBlockhash!;
+      waitUntil((async () => {
         try {
-          const bh = await conn.getLatestBlockhash("confirmed");
+          // Use the tx's own recentBlockhash for the confirmation strategy;
+          // compute a current lastValidBlockHeight to bound polling.
+          const blockHeight = await conn.getBlockHeight("confirmed");
           await conn.confirmTransaction(
-            { signature: sig, blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight },
+            { signature: sig, blockhash: txBlockhash, lastValidBlockHeight: blockHeight + 150 },
             "confirmed",
           );
           const txInfo = await conn.getTransaction(sig, {
@@ -186,9 +195,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const delta = actual - reservedCost;
           if (delta !== 0) await kv.incrby(spendKey, delta);
         } catch {
-          // Reconciliation failed — keep the reservation. Fail-safe.
+          // Reconciliation failed — keep the reservation. Fail-safe direction.
         }
-      })();
+      })());
     }
     return;
   } catch (err: any) {

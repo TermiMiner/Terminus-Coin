@@ -57,36 +57,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const ip = clientIp(req);
 
+  const walletKey = `topup:wallet:${recipient}`;
+  const ipKey = hourKey("topup:ip", ip);
+  const spendKey = todayKey();
+
+  // Track reservations so we can roll back if anything downstream fails.
+  // Each entry is { key, amount } — rollback uses incrby(key, -amount).
+  const reservations: Array<{ key: string; amount: number }> = [];
+  const rollback = async () => {
+    if (!kv) return;
+    await Promise.all(
+      reservations.map((r) => kv!.incrby(r.key, -r.amount)),
+    ).catch(() => { /* best-effort */ });
+  };
+
   try {
-    // ── Quota checks (only if KV is configured) ────────────────────────
+    // ── Atomic quota reservations ──────────────────────────────────────
+    // Read-then-check has a concurrent-burst race: N concurrent requests
+    // all see (count < cap), all pass, all proceed. Atomic incr-then-check
+    // makes overshoot structurally impossible: only the request that wins
+    // the incr race gets "slot N", everyone else sees N+1 > cap and
+    // rolls back.
     if (kv) {
-      const walletKey = `topup:wallet:${recipient}`;
-      const ipKey = hourKey("topup:ip", ip);
-      const spendKey = todayKey();
-
-      const [walletCount, ipCount, todaySpent] = await Promise.all([
-        kv.get<number>(walletKey).then((v) => Number(v ?? 0)),
-        kv.get<number>(ipKey).then((v) => Number(v ?? 0)),
-        kv.get<number>(spendKey).then((v) => Number(v ?? 0)),
-      ]);
-
-      if (walletCount >= MAX_TOPUPS_PER_WALLET) {
+      // 1) per-wallet quota — the main anti-Sybil defense
+      const newWallet = await kv.incr(walletKey);
+      reservations.push({ key: walletKey, amount: 1 });
+      if (newWallet > MAX_TOPUPS_PER_WALLET) {
+        await rollback();
         return res.status(429).json({
-          error: `wallet quota reached (${walletCount}/${MAX_TOPUPS_PER_WALLET}) — fund your wallet manually to keep mining`,
+          error: `wallet quota reached (${newWallet - 1}/${MAX_TOPUPS_PER_WALLET}) — fund your wallet manually to keep mining`,
           quota: "wallet",
         });
       }
-      if (ipCount >= MAX_TOPUPS_PER_IP_PER_HR) {
+
+      // 2) per-IP rate limit
+      const newIp = await kv.incr(ipKey);
+      reservations.push({ key: ipKey, amount: 1 });
+      await kv.expire(ipKey, 3600);
+      if (newIp > MAX_TOPUPS_PER_IP_PER_HR) {
+        await rollback();
         return res.status(429).json({
-          error: `IP rate limit (${ipCount}/${MAX_TOPUPS_PER_IP_PER_HR} per hour) — try again later`,
+          error: `IP rate limit (${newIp - 1}/${MAX_TOPUPS_PER_IP_PER_HR} per hour) — try again later`,
           quota: "ip",
         });
       }
-      if (todaySpent + TOPUP_LAMPORTS > MAX_DAILY_LAMPORTS) {
+
+      // 3) daily spend cap
+      const newSpend = await kv.incrby(spendKey, TOPUP_LAMPORTS);
+      reservations.push({ key: spendKey, amount: TOPUP_LAMPORTS });
+      await kv.expire(spendKey, 86400 * 7);
+      if (newSpend > MAX_DAILY_LAMPORTS) {
+        await rollback();
         return res.status(429).json({
           error: "relayer daily budget exhausted — try tomorrow or pay your own fees",
           quota: "daily",
-          todaySpent,
+          todaySpent: newSpend - TOPUP_LAMPORTS,
           dailyCap: MAX_DAILY_LAMPORTS,
         });
       }
@@ -101,6 +126,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const balance = await conn.getBalance(recipientKey);
     if (balance >= RECIPIENT_BALANCE_CAP) {
+      // Already funded — release reservations since we didn't actually spend.
+      await rollback();
       return res.status(200).json({ skipped: true, balance, reason: "recipient already funded" });
     }
 
@@ -114,23 +141,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }));
     tx.sign(relayer);
 
-    const sig = await conn.sendRawTransaction(tx.serialize());
-    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-
-    // ── Record the grant (KV) ──────────────────────────────────────────
-    if (kv) {
-      const walletKey = `topup:wallet:${recipient}`;
-      const ipKey = hourKey("topup:ip", ip);
-      const spendKey = todayKey();
-      await Promise.all([
-        kv.incr(walletKey),
-        kv.incr(ipKey).then(() => kv.expire(ipKey, 3600)),
-        kv.incrby(spendKey, TOPUP_LAMPORTS).then(() => kv.expire(spendKey, 86400 * 7)), // keep history a week
-      ]);
+    let sig: string;
+    try {
+      sig = await conn.sendRawTransaction(tx.serialize());
+      await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    } catch (err) {
+      // Broadcast or confirmation failed — release reservations.
+      await rollback();
+      throw err;
     }
 
+    // Success — reservations now correctly reflect actual spend; keep them.
     return res.status(200).json({ signature: sig, lamports: TOPUP_LAMPORTS });
   } catch (err: any) {
+    await rollback();
     return res.status(500).json({ error: err?.message ?? "failed" });
   }
 }

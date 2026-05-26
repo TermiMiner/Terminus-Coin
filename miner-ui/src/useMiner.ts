@@ -70,6 +70,9 @@ function friendlyClaimError(err: any): string {
   if (/ContractPaused/i.test(all))        return "Program is paused. Pausing miner.";
   if (/AccountFrozen/i.test(all))         return "This wallet is frozen by the freeze authority.";
   if (/SupplyCapReached/i.test(all))      return "Supply cap reached — emissions complete.";
+  if (/TipExceedsCap/i.test(all))         return "Tip exceeds protocol cap (5 TERM max). Lower your tip in settings.";
+  if (/TipExceedsReward/i.test(all))      return "Tip exceeds this claim's net reward. Lower your tip or wait for a higher-bonus claim.";
+  if (/WrongRentPayer/i.test(all))        return "Bond rent_payer mismatch — the recorded rent payer doesn't match. Use a fresh wallet.";
   if (/insufficient (lamports|funds)/i.test(all))
                                           return "Wallet has no SOL for fees. Top up and retry.";
   if (/blockhash not found/i.test(all))   return "Network blockhash expired. Will retry next round.";
@@ -90,7 +93,12 @@ function backoffForError(err: any): number {
   return 0;
 }
 
-export function useMiner(connection: Connection | null, wallet: MinerWallet, broadcaster?: BroadcastAdapter) {
+export function useMiner(
+  connection: Connection | null,
+  wallet: MinerWallet,
+  broadcaster?: BroadcastAdapter,
+  relayerTipTerm: number = 0,
+) {
   const [status, setStatus] = useState<MinerStatus>("idle");
   const [logs, setLogs] = useState<LogEntry[]>([
     mkLog("dim", `[${ts()}] Terminus Coin miner ready. Connect wallet to start.`),
@@ -258,11 +266,11 @@ export function useMiner(connection: Connection | null, wallet: MinerWallet, bro
             appendLog("dim", `[${ts()}] First mine — also depositing 0.001 SOL bond.`);
           }
 
-          // tip = 0 for now (gasless mining via SOL relayer or self-fund).
-          // The TERM-fee relayer market with positive tips is a follow-up
-          // wired up at the UI level when relayer routing is added.
+          // tip = relayerTipTerm (config'd in App.tsx via the tip selector).
+          // Default 0 = self-fund/free-relay; positive values tip the
+          // configured relayer in TERM out of the miner's net reward.
           const claimIx = await (program.methods as any)
-            .claim(new BN(nonce), new BN(0))
+            .claim(new BN(nonce), new BN(relayerTipTerm))
             .accounts({
               feePayer: feePayerKey,
               mint: MINT_PDA,

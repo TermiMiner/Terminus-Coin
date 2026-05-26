@@ -60,6 +60,18 @@ export default function App() {
     localStorage.setItem("terminus.stats_collapsed", statsCollapsed ? "1" : "0");
   }, [statsCollapsed]);
 
+  // Relayer tip (raw TERM units, 6 decimals). 0 = no tip. Capped by
+  // on-chain MAX_TIP_TERM = 5_000_000 (5 TERM). Default 0 preserves the
+  // current SOL-relayer / self-fund behavior; positive values opt in to
+  // the TERM-fee relayer market.
+  const [claimTip, setClaimTip] = useState<number>(() => {
+    const stored = localStorage.getItem("terminus.claim_tip");
+    return stored !== null ? Number(stored) : 0;
+  });
+  useEffect(() => {
+    localStorage.setItem("terminus.claim_tip", String(claimTip));
+  }, [claimTip]);
+
   // Background tab detection — mobile browsers throttle JS in hidden tabs.
   // When tab is hidden the status pill shows "TAB PAUSED" so users understand
   // why mining stalled when they return.
@@ -124,7 +136,8 @@ export default function App() {
   const { status, logs, hashrate, start: rawStart, stop } = useMiner(
     connection,
     activeWallet,
-    broadcaster
+    broadcaster,
+    claimTip,
   );
 
   // Wrap start() so we can auto-top-up the burner before the first claim.
@@ -397,6 +410,38 @@ export default function App() {
               <button className="btn" onClick={handleExportRelayer}>[ EXPORT ]</button>
               <button className="btn" onClick={handleClearRelayer}>[ CLEAR ]</button>
             </>
+          )}
+        </div>
+      )}
+
+      {/* Claim tip — only meaningful when a relayer is active. Self-fund mode
+          hides this entirely. Presets are in TERM raw units (6 decimals);
+          MAX_TIP_TERM = 5 TERM = 5_000_000 raw. Default 0 = no tip. */}
+      {(sharedActive || localActive) && (
+        <div className="wallet-bar">
+          <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
+            CLAIM TIP:
+          </span>
+          {[
+            { raw: 0,         label: "off" },
+            { raw: 500_000,   label: "0.5" },
+            { raw: 1_000_000, label: "1" },
+            { raw: 2_000_000, label: "2" },
+          ].map(({ raw, label }) => (
+            <button
+              key={raw}
+              className={`btn ${claimTip === raw ? "active" : ""}`}
+              onClick={() => setClaimTip(raw)}
+              title={raw === 0 ? "Self-fund: relayer absorbs SOL costs" : `Tip ${label} TERM per claim`}
+            >
+              [ {label === "off" ? "OFF" : `${label} TERM`} ]
+            </button>
+          ))}
+          {/* Custom tip outside the presets — shows when value is non-zero and not a preset */}
+          {claimTip > 0 && ![500_000, 1_000_000, 2_000_000].includes(claimTip) && (
+            <span className="wallet-address" style={{ color: "#00ff99" }}>
+              · custom: {(claimTip / 1_000_000).toFixed(3)} TERM
+            </span>
           )}
         </div>
       )}

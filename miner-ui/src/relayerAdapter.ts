@@ -41,6 +41,15 @@ export interface SharedRelayerInfo {
     topupsMax: number;
     topupsRemaining: number;
   };
+  // Bootstrap-mode fields — present when operator has set BOOTSTRAP_MODE=true.
+  bootstrapMode?: boolean;
+  minTipTerm?: number;      // raw TERM units (6 decimals)
+  // Deprecation banner — present only inside the sunset window.
+  deprecation?: {
+    sunsetDate: string;     // ISO 8601
+    daysRemaining: number;
+    message: string;
+  };
 }
 
 /**
@@ -64,6 +73,9 @@ export async function fetchSharedRelayerInfo(walletPubkey?: PublicKey): Promise<
       dailySpent: data.dailySpent,
       dailyRemaining: data.dailyRemaining,
       wallet: data.wallet,
+      bootstrapMode: data.bootstrapMode,
+      minTipTerm: data.minTipTerm,
+      deprecation: data.deprecation,
     };
   } catch {
     return null;

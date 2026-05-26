@@ -5,6 +5,29 @@ import { Redis } from "@upstash/redis";
 const MAX_TOPUPS_PER_WALLET = parseInt(process.env.MAX_TOPUPS_PER_WALLET ?? "1");
 const MAX_DAILY_LAMPORTS    = parseInt(process.env.MAX_DAILY_LAMPORTS    ?? "1000000000");
 
+// Mirror the deprecation banner logic from api/relay.ts so the UI can
+// fetch it via this endpoint (one-shot on page load) without waiting for
+// a relayed claim to learn the relayer is sunsetting.
+const BOOTSTRAP_SUNSET_DATE   = process.env.BOOTSTRAP_SUNSET_DATE ?? "";
+const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
+const MIN_BOOTSTRAP_TIP_TERM  = parseInt(process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000");
+const BOOTSTRAP_MODE          = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
+
+function deprecationInfo() {
+  if (!BOOTSTRAP_SUNSET_DATE) return null;
+  const sunset = Date.parse(BOOTSTRAP_SUNSET_DATE);
+  if (isNaN(sunset)) return null;
+  const daysRemaining = Math.ceil((sunset - Date.now()) / (1000 * 60 * 60 * 24));
+  if (daysRemaining > DEPRECATION_BANNER_DAYS) return null;
+  return {
+    sunsetDate: BOOTSTRAP_SUNSET_DATE,
+    daysRemaining: Math.max(0, daysRemaining),
+    message: daysRemaining > 0
+      ? `Bootstrap relayer ending in ${daysRemaining} day${daysRemaining === 1 ? "" : "s"}. After that you'll need to self-fund or use a community relayer.`
+      : "Bootstrap relayer has ended. Switch to self-fund or use a community relayer.",
+  };
+}
+
 // Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
@@ -58,6 +81,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } else {
       out.kvEnabled = false;
     }
+
+    // Bootstrap-mode metadata: minimum tip enforced + deprecation status.
+    // Both surfaced so the UI can render the tip floor and the sunset banner.
+    if (BOOTSTRAP_MODE) {
+      out.bootstrapMode = true;
+      out.minTipTerm = MIN_BOOTSTRAP_TIP_TERM;
+    }
+    const dep = deprecationInfo();
+    if (dep) out.deprecation = dep;
 
     res.setHeader("Cache-Control", "public, max-age=15");
     return res.status(200).json(out);

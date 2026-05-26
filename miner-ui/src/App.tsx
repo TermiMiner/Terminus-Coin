@@ -414,14 +414,30 @@ export default function App() {
         </div>
       )}
 
+      {/* Bootstrap relayer sunset banner — appears only inside the sunset
+          window (operator sets BOOTSTRAP_SUNSET_DATE env var + DEPRECATION_BANNER_DAYS). */}
+      {shared?.deprecation && (
+        <div className="wallet-bar" style={{ borderColor: "#ff9933", color: "#ff9933" }}>
+          <span className="wallet-address" style={{ color: "#ff9933" }}>
+            ⚠ {shared.deprecation.message}
+          </span>
+        </div>
+      )}
+
       {/* Claim tip — only meaningful when a relayer is active. Self-fund mode
           hides this entirely. Presets are in TERM raw units (6 decimals);
-          MAX_TIP_TERM = 5 TERM = 5_000_000 raw. Default 0 = no tip. */}
+          MAX_TIP_TERM = 5 TERM = 5_000_000 raw. Default 0 = no tip.
+          When bootstrap mode is on, repeat claims must tip at least minTipTerm. */}
       {(sharedActive || localActive) && (
         <div className="wallet-bar">
           <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
             CLAIM TIP:
           </span>
+          {shared?.bootstrapMode && shared.minTipTerm !== undefined && shared.minTipTerm > 0 && (
+            <span className="wallet-address" style={{ color: "#ff9933" }} title="The shared relayer requires this minimum tip per claim. First-ever claims are subsidized.">
+              min {(shared.minTipTerm / 1_000_000).toFixed(2)} TERM
+            </span>
+          )}
           {[
             { raw: 0,         label: "off" },
             { raw: 500_000,   label: "0.5" },

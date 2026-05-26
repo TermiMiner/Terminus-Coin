@@ -90,10 +90,10 @@ function decodeClaimIx(tx: Transaction): { tip: bigint; authority: PublicKey } |
   if (!claimIx) return null;
   // tip is the second u64 in the args, after the 8-byte nonce
   const tip = claimIx.data.readBigUInt64LE(16);
-  // authority is the 9th account in the Claim<'info> struct
-  // (fee_payer, global_state, stake_pool, mint, user_token_account,
-  //  fee_payer_token_account, mint_authority, authority, ...)
-  // We index by position in the ix's account keys; the layout is stable.
+  // `authority` is account index 7 in the Claim<'info> struct, 0-indexed:
+  //   0=fee_payer 1=global_state 2=stake_pool 3=mint 4=user_token_account
+  //   5=fee_payer_token_account 6=mint_authority 7=authority …
+  // Position is stable as part of the IDL contract.
   const AUTHORITY_INDEX = 7;
   if (claimIx.keys.length <= AUTHORITY_INDEX) return null;
   return { tip, authority: claimIx.keys[AUTHORITY_INDEX].pubkey };
@@ -107,12 +107,7 @@ async function isFirstClaim(conn: Connection, authority: PublicKey): Promise<boo
     PROGRAM_ID_PUBKEY,
   );
   const acc = await conn.getAccountInfo(userStatePda);
-  if (!acc) return true;
-  // Defensive belt-and-suspenders: even if the account exists, check that
-  // last_claim_time (8 bytes after the 8-byte discriminator) is non-zero.
-  if (acc.data.length < 16) return true;
-  const lastClaim = acc.data.readBigInt64LE(8);
-  return lastClaim === 0n;
+  return !acc;
 }
 
 // Returns deprecation metadata if BOOTSTRAP_SUNSET_DATE is configured and
@@ -201,38 +196,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const conn = new Connection(rpc, "confirmed");
 
     // ── Bootstrap-mode policy ──────────────────────────────────────────
-    // Only enforced when BOOTSTRAP_MODE=true. Rules:
+    // Only enforced when BOOTSTRAP_MODE=true, and only on claim txs.
+    // Non-claim relayed txs (e.g. withdraw_bond — the end-of-mining rent
+    // refund) pass through with no bootstrap-mode policy, because they
+    // don't produce TERM the relayer could be tipped from. Rules for
+    // claim txs:
     //   - Repeat claims (wallet has existing UserState) MUST tip at least
     //     MIN_BOOTSTRAP_TIP_TERM, or relayer rejects.
     //   - First claims (fresh wallet, no UserState yet) are subsidized:
     //     tip can be 0. Subsidy continues even after sunset.
     //   - After sunset date: paid relays return 410 Gone. Only first-claim
     //     subsidies continue (manual contingency).
+    //
+    // Known bounded DoS surface: a repeat-claim attacker could attach a
+    // deposit_bond ix to their claim tx — if it fails on-chain (bond PDA
+    // already in use), the relayer eats the tx fee (~5K lamports). Bounded
+    // by MAX_RELAYS_PER_IP_PER_HR × ~5K ≈ 600K lamports/hr/IP.
     const deprecation = deprecationInfo();
     if (BOOTSTRAP_MODE) {
       const claimInfo = decodeClaimIx(tx);
-      if (!claimInfo) {
-        return res.status(400).json({ error: "tx must contain a claim ix" });
-      }
-      const { tip, authority } = claimInfo;
-      const firstClaim = await isFirstClaim(conn, authority);
+      if (claimInfo) {
+        const { tip, authority } = claimInfo;
+        const firstClaim = await isFirstClaim(conn, authority);
 
-      // Hard cutover after sunset: only first-claim subsidies allowed.
-      if (deprecation && deprecation.daysRemaining === 0 && !firstClaim) {
-        return res.status(410).json({
-          error: deprecation.message,
-          deprecation,
-        });
-      }
+        // Hard cutover after sunset: only first-claim subsidies allowed.
+        if (deprecation && deprecation.daysRemaining === 0 && !firstClaim) {
+          return res.status(410).json({
+            error: deprecation.message,
+            deprecation,
+          });
+        }
 
-      // Tip floor — repeat claims must tip enough to cover relayer SOL costs.
-      if (!firstClaim && tip < BigInt(MIN_BOOTSTRAP_TIP_TERM)) {
-        return res.status(429).json({
-          error: `Tip below relayer minimum (${(MIN_BOOTSTRAP_TIP_TERM / 1_000_000).toFixed(2)} TERM). Raise your tip in settings or switch to self-fund.`,
-          quota: "tip-floor",
-          minTip: MIN_BOOTSTRAP_TIP_TERM,
-          providedTip: Number(tip),
-        });
+        // Tip floor — repeat claims must tip enough to cover relayer SOL costs.
+        if (!firstClaim && tip < BigInt(MIN_BOOTSTRAP_TIP_TERM)) {
+          return res.status(429).json({
+            error: `Tip below relayer minimum (${(MIN_BOOTSTRAP_TIP_TERM / 1_000_000).toFixed(2)} TERM). Raise your tip in settings or switch to self-fund.`,
+            quota: "tip-floor",
+            minTip: MIN_BOOTSTRAP_TIP_TERM,
+            providedTip: Number(tip),
+          });
+        }
       }
     }
 

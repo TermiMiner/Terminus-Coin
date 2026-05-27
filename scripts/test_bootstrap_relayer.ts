@@ -358,12 +358,29 @@ async function main() {
   console.log(`${DIM}waiting ${waitSeconds}s for on-chain rate limit to clear...${RST}`);
   await new Promise(r => setTimeout(r, waitSeconds * 1000));
 
-  await test("4. Repeat claim with tip=minTipTerm → 200 (passes the gate)", async () => {
+  await test("4. Repeat claim with tip=minTipTerm → relayer ATA gains exactly minTipTerm", async () => {
+    // Capture relayer ATA balance before — existing balance is fine, we
+    // measure delta to isolate this tx's effect.
+    const pre = await conn.getTokenAccountBalance(relayerAta);
+
     const tx = await buildRepeatClaim(minTipTerm);
     const { status, body } = await submitRelay(tx);
     if (status !== 200) throw new Error(`expected 200, got ${status} body=${JSON.stringify(body)}`);
     if (typeof body.signature !== "string") throw new Error(`no signature in response`);
+
+    // The relay endpoint accepting the tx (200 + signature) only proves it
+    // passed the bootstrap-mode gate and was broadcast. The on-chain claim
+    // could still fail post-broadcast (stale nonce, rate limit, on-chain
+    // tip-routing bug), so wait for confirmation and check the tip
+    // actually landed in the relayer's ATA.
+    await waitForConfirmation(body.signature);
+    const post = await conn.getTokenAccountBalance(relayerAta);
+    const delta = BigInt(post.value.amount) - BigInt(pre.value.amount);
+    if (delta !== minTipTerm) {
+      throw new Error(`relayer ATA delta ${delta} ≠ expected tip ${minTipTerm}`);
+    }
     console.log(`     ${DIM}→ broadcast sig: ${body.signature.slice(0, 24)}...${RST}`);
+    console.log(`     ${DIM}→ relayer ATA Δ +${delta} raw = +${Number(delta)/1e6} TERM ✓${RST}`);
   });
 
   console.log();

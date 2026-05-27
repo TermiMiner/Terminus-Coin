@@ -133,11 +133,15 @@ export default function App() {
   const sharedActive = !!shared && isBurner;
   const localActive  = !shared && isBurner && !!relayer.publicKey;
 
+  // Tip is only meaningful when a relayer is active. In self-fund mode, the
+  // "tip" would be a no-op self-transfer (miner ATA → miner ATA) that just
+  // burns compute units and confuses balances. Force 0 unless relayed.
+  const effectiveTip = (sharedActive || localActive) ? claimTip : 0;
   const { status, logs, hashrate, start: rawStart, stop } = useMiner(
     connection,
     activeWallet,
     broadcaster,
-    claimTip,
+    effectiveTip,
   );
 
   // Wrap start() so we can auto-top-up the burner before the first claim.

@@ -27,10 +27,43 @@ import {
 import { keccak_256 } from "@noble/hashes/sha3";
 import { createHash } from "node:crypto";
 
-const URL_BASE = process.env.BOOTSTRAP_URL?.replace(/\/$/, "");
-if (!URL_BASE) {
+// BOOTSTRAP_URL may include a ?_vercel_share=... query string for protected
+// previews. We split it: base for path construction, share-token kept aside.
+const rawUrl = process.env.BOOTSTRAP_URL;
+if (!rawUrl) {
   console.error("Set BOOTSTRAP_URL env var (e.g., https://preview.vercel.app)");
   process.exit(1);
+}
+const parsedUrl = new URL(rawUrl);
+const URL_BASE = `${parsedUrl.protocol}//${parsedUrl.host}`;
+const SHARE_TOKEN = parsedUrl.searchParams.get("_vercel_share") ?? "";
+// Vercel protection cookie acquired by exchanging the share token; set in main().
+let vercelJwt = "";
+
+function fetchOpts(extra: RequestInit = {}): RequestInit {
+  const headers = new Headers(extra.headers);
+  if (vercelJwt) headers.set("Cookie", `_vercel_jwt=${vercelJwt}`);
+  return { ...extra, headers };
+}
+
+async function exchangeShareToken(): Promise<void> {
+  if (!SHARE_TOKEN) return;
+  // Hit any endpoint with the share token — Vercel will redirect and set
+  // _vercel_jwt cookie. We capture the Set-Cookie header manually since
+  // Node's fetch doesn't have a built-in cookie jar.
+  const res = await fetch(`${URL_BASE}/api/relayer-info?_vercel_share=${SHARE_TOKEN}`, {
+    redirect: "manual",
+  });
+  for (const [k, v] of res.headers.entries()) {
+    if (k.toLowerCase() === "set-cookie") {
+      const m = v.match(/_vercel_jwt=([^;]+)/);
+      if (m) vercelJwt = m[1];
+    }
+  }
+  if (!vercelJwt) {
+    // Maybe the response was direct (no redirect) — try the body URL or just continue
+    console.error(`${DIM}warn: couldn't extract _vercel_jwt cookie from share-token exchange${RST}`);
+  }
 }
 
 const RPC = (process.env.RPC_URL ?? "https://api.devnet.solana.com").trim();
@@ -134,27 +167,30 @@ function buildClaimIx(
 // ─── HTTP helpers ──────────────────────────────────────────────────────────
 
 async function relayerInfo(): Promise<any> {
-  const res = await fetch(`${URL_BASE}/api/relayer-info`);
-  if (!res.ok) throw new Error(`relayer-info HTTP ${res.status}`);
+  const res = await fetch(`${URL_BASE}/api/relayer-info`, fetchOpts());
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`relayer-info HTTP ${res.status} body=${body.slice(0, 120)}`);
+  }
   return res.json();
 }
 
 async function submitRelay(tx: Transaction): Promise<{ status: number; body: any }> {
   const b64 = Buffer.from(tx.serialize({ requireAllSignatures: false })).toString("base64");
-  const res = await fetch(`${URL_BASE}/api/relay`, {
+  const res = await fetch(`${URL_BASE}/api/relay`, fetchOpts({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ transaction: b64 }),
-  });
+  }));
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 
 async function callTopup(recipient: PublicKey): Promise<{ status: number; body: any }> {
-  const res = await fetch(`${URL_BASE}/api/topup`, {
+  const res = await fetch(`${URL_BASE}/api/topup`, fetchOpts({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ recipient: recipient.toBase58() }),
-  });
+  }));
   return { status: res.status, body: await res.json().catch(() => ({})) };
 }
 
@@ -185,7 +221,7 @@ async function waitForConfirmation(sig: string, maxWaitMs = 30_000): Promise<voi
   throw new Error(`tx ${sig.slice(0, 16)}... not confirmed within ${maxWaitMs}ms`);
 }
 
-async function readGlobalState(): Promise<{ difficulty: bigint; lastHash: number[] }> {
+async function readGlobalState(): Promise<{ difficulty: bigint; lastHash: number[]; rateLimitSeconds: bigint }> {
   const state = await conn.getAccountInfo(GLOBAL_STATE_PDA);
   if (!state) throw new Error("GlobalState not found");
   // 8 disc + 32 authority + 32 freeze + 32 pending_auth + 32 pending_freeze
@@ -193,9 +229,11 @@ async function readGlobalState(): Promise<{ difficulty: bigint; lastHash: number
   //   + 8 total_claims + 8 claims_in_window + 8 total_minted
   //   + 8 rate_limit_seconds + 32 last_hash
   const difficultyOffset = 8 + 32 * 4 + 1;
+  const rateLimitOffset = difficultyOffset + 8 * 6;
   const lastHashOffset = difficultyOffset + 8 * 7;
   return {
     difficulty: state.data.readBigUInt64LE(difficultyOffset),
+    rateLimitSeconds: state.data.readBigInt64LE(rateLimitOffset),
     lastHash: Array.from(state.data.subarray(lastHashOffset, lastHashOffset + 32)),
   };
 }
@@ -203,7 +241,14 @@ async function readGlobalState(): Promise<{ difficulty: bigint; lastHash: number
 async function main() {
   console.log(`\nBootstrap-mode operational verification`);
   console.log(`${DIM}target: ${URL_BASE}${RST}`);
-  console.log(`${DIM}rpc:    ${RPC}${RST}\n`);
+  console.log(`${DIM}rpc:    ${RPC}${RST}`);
+
+  // Exchange Vercel share token for protection-bypass JWT (if any)
+  if (SHARE_TOKEN) {
+    await exchangeShareToken();
+    if (vercelJwt) console.log(`${DIM}auth:   share token exchanged for _vercel_jwt cookie${RST}`);
+  }
+  console.log();
 
   // ─── Test 1: relayer-info ─────────────────────────────────────────────
   let info: any;
@@ -295,6 +340,8 @@ async function main() {
   }
 
   // ─── Test 3: repeat claim with tip=0 (now UserState exists) → 429 ────
+  // The relay endpoint rejects BEFORE broadcasting, so the on-chain
+  // rate_limit_seconds cooldown doesn't apply here.
   await test("3. Repeat claim with tip=0 → 429 quota=tip-floor", async () => {
     const tx = await buildRepeatClaim(0n);
     const { status, body } = await submitRelay(tx);
@@ -304,6 +351,13 @@ async function main() {
   });
 
   // ─── Test 4: repeat claim with tip=minTipTerm → 200 ──────────────────
+  // The relay endpoint will broadcast this one, which means the on-chain
+  // rate_limit_seconds cooldown applies. Wait it out.
+  const { rateLimitSeconds } = await readGlobalState();
+  const waitSeconds = Number(rateLimitSeconds) + 5;
+  console.log(`${DIM}waiting ${waitSeconds}s for on-chain rate limit to clear...${RST}`);
+  await new Promise(r => setTimeout(r, waitSeconds * 1000));
+
   await test("4. Repeat claim with tip=minTipTerm → 200 (passes the gate)", async () => {
     const tx = await buildRepeatClaim(minTipTerm);
     const { status, body } = await submitRelay(tx);

@@ -1,19 +1,21 @@
 // Operational verification for the bootstrap-mode relayer.
 //
-// Exercises the four critical paths against a deployed Vercel Preview:
+// All four tests run sequentially on a single fresh wallet:
 //   1. /api/relayer-info exposes bootstrapMode + minTipTerm
-//   2. Repeat claim with tip=0 → 429 quota="tip-floor"
-//   3. Repeat claim with tip=MIN_BOOTSTRAP_TIP_TERM → 200 (passes the gate)
-//   4. Fresh wallet first claim with tip=0 → 200 (subsidy path)
+//   2. Fresh wallet → topup → first claim with tip=0 → 200 (subsidy path)
+//   3. Same wallet → second claim with tip=0 → 429 quota="tip-floor"
+//   4. Same wallet → third claim with tip=MIN_BOOTSTRAP_TIP_TERM → 200
+//
+// Each run burns one /api/topup (per-wallet quota = 1) because the fresh
+// wallet is unique each time. If the per-IP topup rate limit is reached,
+// re-run from a different IP or wait an hour.
 //
 // Usage:
 //   BOOTSTRAP_URL=https://your-preview.vercel.app \
 //     npx ts-node scripts/test_bootstrap_relayer.ts
 //
 // Optional:
-//   RPC_URL          (default: https://api.devnet.solana.com)
-//   ANCHOR_WALLET    (default: ~/.config/solana/devnet-wallet.json)
-//   SKIP_FIRST_CLAIM (set to "1" to skip test 4 if /api/topup quota is used)
+//   RPC_URL  (default: https://api.devnet.solana.com)
 
 import {
   ComputeBudgetProgram, Connection, Keypair, PublicKey, Transaction,
@@ -24,8 +26,6 @@ import {
 } from "@solana/spl-token";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
-import * as os from "node:os";
 
 const URL_BASE = process.env.BOOTSTRAP_URL?.replace(/\/$/, "");
 if (!URL_BASE) {
@@ -34,8 +34,6 @@ if (!URL_BASE) {
 }
 
 const RPC = (process.env.RPC_URL ?? "https://api.devnet.solana.com").trim();
-const WALLET_PATH = process.env.ANCHOR_WALLET ?? `${os.homedir()}/.config/solana/devnet-wallet.json`;
-const SKIP_FIRST_CLAIM = process.env.SKIP_FIRST_CLAIM === "1";
 
 const PROGRAM_ID = new PublicKey("FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y");
 const PASS = "\x1b[32m✓\x1b[0m";
@@ -44,9 +42,6 @@ const DIM  = "\x1b[2m";
 const RST  = "\x1b[0m";
 
 const conn = new Connection(RPC, "confirmed");
-const wallet = Keypair.fromSecretKey(
-  new Uint8Array(JSON.parse(fs.readFileSync(WALLET_PATH.replace(/^~/, os.homedir()), "utf8")))
-);
 
 const CLAIM_DISC = createHash("sha256").update("global:claim").digest().subarray(0, 8);
 const DEPOSIT_BOND_DISC = createHash("sha256").update("global:deposit_bond").digest().subarray(0, 8);
@@ -177,11 +172,38 @@ async function test(name: string, fn: () => Promise<void>) {
   }
 }
 
+async function waitForConfirmation(sig: string, maxWaitMs = 30_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const status = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
+    if (status?.value?.confirmationStatus === "confirmed" || status?.value?.confirmationStatus === "finalized") {
+      if (status.value.err) throw new Error(`tx failed: ${JSON.stringify(status.value.err)}`);
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  throw new Error(`tx ${sig.slice(0, 16)}... not confirmed within ${maxWaitMs}ms`);
+}
+
+async function readGlobalState(): Promise<{ difficulty: bigint; lastHash: number[] }> {
+  const state = await conn.getAccountInfo(GLOBAL_STATE_PDA);
+  if (!state) throw new Error("GlobalState not found");
+  // 8 disc + 32 authority + 32 freeze + 32 pending_auth + 32 pending_freeze
+  //   + 1 paused + 8 difficulty + 8 launch_time + 8 last_claim_window
+  //   + 8 total_claims + 8 claims_in_window + 8 total_minted
+  //   + 8 rate_limit_seconds + 32 last_hash
+  const difficultyOffset = 8 + 32 * 4 + 1;
+  const lastHashOffset = difficultyOffset + 8 * 7;
+  return {
+    difficulty: state.data.readBigUInt64LE(difficultyOffset),
+    lastHash: Array.from(state.data.subarray(lastHashOffset, lastHashOffset + 32)),
+  };
+}
+
 async function main() {
   console.log(`\nBootstrap-mode operational verification`);
   console.log(`${DIM}target: ${URL_BASE}${RST}`);
-  console.log(`${DIM}rpc:    ${RPC}${RST}`);
-  console.log(`${DIM}wallet: ${wallet.publicKey.toBase58()}${RST}\n`);
+  console.log(`${DIM}rpc:    ${RPC}${RST}\n`);
 
   // ─── Test 1: relayer-info ─────────────────────────────────────────────
   let info: any;
@@ -201,26 +223,62 @@ async function main() {
   const relayerPubkey = new PublicKey(info.pubkey);
   const minTipTerm = BigInt(info.minTipTerm);
 
-  // Pre-build artifacts shared across tests 2 + 3
-  const userAta = getAssociatedTokenAddressSync(MINT_PDA, wallet.publicKey);
+  // Single fresh wallet drives all remaining tests
+  const fresh = Keypair.generate();
+  const freshAta = getAssociatedTokenAddressSync(MINT_PDA, fresh.publicKey);
   const relayerAta = getAssociatedTokenAddressSync(MINT_PDA, relayerPubkey);
+  console.log(`\n${DIM}fresh wallet for tests 2-4: ${fresh.publicKey.toBase58()}${RST}`);
 
-  const userStateExists = await conn.getAccountInfo(userStatePda(wallet.publicKey));
-  if (!userStateExists) {
-    console.log(`\n${FAIL} wallet ${wallet.publicKey.toBase58()} has no UserState on-chain.`);
-    console.log(`     Tests 2+3 need a wallet that has claimed at least once. Use a different wallet via ANCHOR_WALLET=.`);
-    process.exit(1);
-  }
+  // ─── Test 2: fresh wallet first claim with tip=0 (subsidy path) ───────
+  await test("2. Fresh wallet first claim with tip=0 → 200 (subsidy)", async () => {
+    // Step A: topup
+    const topupRes = await callTopup(fresh.publicKey);
+    if (topupRes.status !== 200) {
+      throw new Error(`topup failed: ${topupRes.status} ${JSON.stringify(topupRes.body)}`);
+    }
+    const topupSig = topupRes.body.signature ?? "(skipped)";
+    console.log(`     ${DIM}→ topup sig: ${topupSig.slice(0, 24)}${RST}`);
+    if (topupRes.body.signature) await waitForConfirmation(topupRes.body.signature);
 
-  async function buildSignedClaim(tipTerm: bigint): Promise<Transaction> {
-    const state = await conn.getAccountInfo(GLOBAL_STATE_PDA);
-    if (!state) throw new Error("GlobalState not found");
-    // GlobalState layout: 8 disc + 32 authority + 32 freeze + 32 pending_auth + 32 pending_freeze
-    //   + 1 paused + 8 difficulty + 8 launch_time + 8 last_claim_window + 8 total_claims
-    //   + 8 claims_in_window + 8 total_minted + 8 rate_limit_seconds + 32 last_hash
-    const difficulty = state.data.readBigUInt64LE(8 + 32*4 + 1);
-    const lastHash = Array.from(state.data.subarray(8 + 32*4 + 1 + 8*7, 8 + 32*4 + 1 + 8*7 + 32));
-    const nonce = mineNonce(lastHash, wallet.publicKey, difficulty);
+    // Step B: build first-claim tx with depositBond + claim(tip=0)
+    const { difficulty, lastHash } = await readGlobalState();
+    const nonce = mineNonce(lastHash, fresh.publicKey, difficulty);
+
+    const { blockhash } = await conn.getLatestBlockhash("confirmed");
+    const tx = new Transaction({ recentBlockhash: blockhash, feePayer: relayerPubkey });
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+    tx.add(createAssociatedTokenAccountIdempotentInstruction(
+      relayerPubkey, relayerAta, relayerPubkey, MINT_PDA,
+    ));
+    tx.add(createAssociatedTokenAccountIdempotentInstruction(
+      relayerPubkey, freshAta, fresh.publicKey, MINT_PDA,
+    ));
+    tx.add({
+      programId: PROGRAM_ID,
+      keys: [
+        { pubkey: bondPda(fresh.publicKey), isSigner: false, isWritable: true },
+        { pubkey: fresh.publicKey,          isSigner: true,  isWritable: false },
+        { pubkey: relayerPubkey,            isSigner: true,  isWritable: true },
+        { pubkey: new PublicKey("11111111111111111111111111111111"), isSigner: false, isWritable: false },
+      ],
+      data: depositBondIxData(),
+    } as any);
+    const claimIx = buildClaimIx(fresh.publicKey, relayerPubkey, freshAta, relayerAta, nonce, 0n);
+    tx.add({ ...claimIx, keys: claimIx.keys.map((k: any) => k) } as any);
+    tx.partialSign(fresh);
+
+    const { status, body } = await submitRelay(tx);
+    if (status !== 200) throw new Error(`first-claim subsidy rejected: ${status} ${JSON.stringify(body)}`);
+    if (typeof body.signature !== "string") throw new Error(`no signature in response`);
+    console.log(`     ${DIM}→ subsidized first claim sig: ${body.signature.slice(0, 24)}...${RST}`);
+
+    // Wait for confirmation so UserState exists for the next tests
+    await waitForConfirmation(body.signature);
+  });
+
+  async function buildRepeatClaim(tipTerm: bigint): Promise<Transaction> {
+    const { difficulty, lastHash } = await readGlobalState();
+    const nonce = mineNonce(lastHash, fresh.publicKey, difficulty);
     const { blockhash } = await conn.getLatestBlockhash("confirmed");
     const tx = new Transaction({ recentBlockhash: blockhash, feePayer: relayerPubkey });
     tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }));
@@ -228,90 +286,31 @@ async function main() {
       relayerPubkey, relayerAta, relayerPubkey, MINT_PDA,
     ));
     tx.add(createAssociatedTokenAccountIdempotentInstruction(
-      relayerPubkey, userAta, wallet.publicKey, MINT_PDA,
+      relayerPubkey, freshAta, fresh.publicKey, MINT_PDA,
     ));
-    const ix = buildClaimIx(wallet.publicKey, relayerPubkey, userAta, relayerAta, nonce, tipTerm);
+    const ix = buildClaimIx(fresh.publicKey, relayerPubkey, freshAta, relayerAta, nonce, tipTerm);
     tx.add({ ...ix, keys: ix.keys.map((k: any) => k) } as any);
-    tx.partialSign(wallet);
+    tx.partialSign(fresh);
     return tx;
   }
 
-  // ─── Test 2: tip = 0, repeat claim → 429 tip-floor ────────────────────
-  await test("2. Repeat claim with tip=0 → 429 quota=tip-floor", async () => {
-    const tx = await buildSignedClaim(0n);
+  // ─── Test 3: repeat claim with tip=0 (now UserState exists) → 429 ────
+  await test("3. Repeat claim with tip=0 → 429 quota=tip-floor", async () => {
+    const tx = await buildRepeatClaim(0n);
     const { status, body } = await submitRelay(tx);
     if (status !== 429) throw new Error(`expected 429, got ${status} body=${JSON.stringify(body)}`);
     if (body.quota !== "tip-floor") throw new Error(`expected quota=tip-floor, got ${body.quota}`);
     console.log(`     ${DIM}→ ${body.error}${RST}`);
   });
 
-  // ─── Test 3: tip = minTipTerm, repeat claim → 200 ─────────────────────
-  await test("3. Repeat claim with tip=minTipTerm → 200 (passes the gate)", async () => {
-    const tx = await buildSignedClaim(minTipTerm);
+  // ─── Test 4: repeat claim with tip=minTipTerm → 200 ──────────────────
+  await test("4. Repeat claim with tip=minTipTerm → 200 (passes the gate)", async () => {
+    const tx = await buildRepeatClaim(minTipTerm);
     const { status, body } = await submitRelay(tx);
-    // 200 means the relay endpoint accepted and broadcast.
-    // The on-chain claim might fail later (stale nonce if mining races, or
-    // rate-limit cooldown) — that's not what we're testing here.
     if (status !== 200) throw new Error(`expected 200, got ${status} body=${JSON.stringify(body)}`);
     if (typeof body.signature !== "string") throw new Error(`no signature in response`);
     console.log(`     ${DIM}→ broadcast sig: ${body.signature.slice(0, 24)}...${RST}`);
   });
-
-  if (SKIP_FIRST_CLAIM) {
-    console.log(`\n${DIM}(skipping test 4 — SKIP_FIRST_CLAIM=1)${RST}`);
-  } else {
-    // ─── Test 4: fresh wallet first claim with tip=0 ──────────────────────
-    await test("4. Fresh wallet first claim with tip=0 → 200 (subsidy)", async () => {
-      const fresh = Keypair.generate();
-      console.log(`     ${DIM}fresh wallet: ${fresh.publicKey.toBase58()}${RST}`);
-
-      // Step A: topup gets the fresh wallet some bootstrap SOL
-      const topupRes = await callTopup(fresh.publicKey);
-      if (topupRes.status !== 200) {
-        throw new Error(`topup failed: ${topupRes.status} ${JSON.stringify(topupRes.body)}`);
-      }
-      console.log(`     ${DIM}→ topup sig: ${(topupRes.body.signature ?? topupRes.body.skipped ?? '?').toString().slice(0, 24)}${RST}`);
-      // Wait briefly for topup confirmation propagation
-      await new Promise(r => setTimeout(r, 4000));
-
-      // Step B: build first-claim tx (depositBond + claim)
-      const freshAta = getAssociatedTokenAddressSync(MINT_PDA, fresh.publicKey);
-      const state = await conn.getAccountInfo(GLOBAL_STATE_PDA);
-      if (!state) throw new Error("GlobalState not found");
-      const difficulty = state.data.readBigUInt64LE(8 + 32*4 + 1);
-      const lastHash = Array.from(state.data.subarray(8 + 32*4 + 1 + 8*7, 8 + 32*4 + 1 + 8*7 + 32));
-      const nonce = mineNonce(lastHash, fresh.publicKey, difficulty);
-
-      const { blockhash } = await conn.getLatestBlockhash("confirmed");
-      const tx = new Transaction({ recentBlockhash: blockhash, feePayer: relayerPubkey });
-      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
-      tx.add(createAssociatedTokenAccountIdempotentInstruction(
-        relayerPubkey, relayerAta, relayerPubkey, MINT_PDA,
-      ));
-      tx.add(createAssociatedTokenAccountIdempotentInstruction(
-        relayerPubkey, freshAta, fresh.publicKey, MINT_PDA,
-      ));
-      // depositBond ix — authority = fresh (signs), rentPayer = relayer (also signs)
-      tx.add({
-        programId: PROGRAM_ID,
-        keys: [
-          { pubkey: bondPda(fresh.publicKey), isSigner: false, isWritable: true },
-          { pubkey: fresh.publicKey,          isSigner: true,  isWritable: false },
-          { pubkey: relayerPubkey,            isSigner: true,  isWritable: true },
-          { pubkey: new PublicKey("11111111111111111111111111111111"), isSigner: false, isWritable: false },
-        ],
-        data: depositBondIxData(),
-      } as any);
-      const claimIx = buildClaimIx(fresh.publicKey, relayerPubkey, freshAta, relayerAta, nonce, 0n);
-      tx.add({ ...claimIx, keys: claimIx.keys.map((k: any) => k) } as any);
-      tx.partialSign(fresh);
-
-      const { status, body } = await submitRelay(tx);
-      if (status !== 200) throw new Error(`first-claim subsidy rejected: ${status} ${JSON.stringify(body)}`);
-      if (typeof body.signature !== "string") throw new Error(`no signature in response`);
-      console.log(`     ${DIM}→ subsidized first claim sig: ${body.signature.slice(0, 24)}...${RST}`);
-    });
-  }
 
   console.log();
   if (failures === 0) {

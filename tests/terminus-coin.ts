@@ -4,6 +4,7 @@ import { Terminuscoin } from "../target/types/terminuscoin";
 import {
   createAssociatedTokenAccount,
   getAccount,
+  getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { expect } from "chai";
@@ -444,6 +445,82 @@ describe("terminuscoin – full feature suite", () => {
       } catch (err: any) {
         expect(err.message).to.include("RateLimitExceeded");
       }
+
+      // Reset rate limit so subsequent tests are unaffected
+      await program.methods.setRateLimit(new anchor.BN(0))
+        .accounts({ authority: wallet.publicKey })
+        .rpc();
+    });
+
+    it("sponsored bonds get 2× cooldown vs self-funded bonds", async () => {
+      // Setup: two fresh wallets, two different rent_payer postures.
+      //   selfMiner: deposits its own bond  (rent_payer = self)
+      //   sponMiner: bond deposited with relayer-as-rent_payer (sponsored)
+      const sponsor = anchor.web3.Keypair.generate();
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(sponsor.publicKey, 1_000_000_000)
+      );
+
+      const selfMiner = anchor.web3.Keypair.generate();
+      const sponMiner = anchor.web3.Keypair.generate();
+      for (const m of [selfMiner, sponMiner]) {
+        await provider.connection.confirmTransaction(
+          await provider.connection.requestAirdrop(m.publicKey, 1_000_000_000)
+        );
+        await createAssociatedTokenAccount(provider.connection, wallet.payer, mint, m.publicKey);
+      }
+
+      await program.methods.depositBond()
+        .accounts({ authority: selfMiner.publicKey, rentPayer: selfMiner.publicKey })
+        .signers([selfMiner])
+        .rpc();
+      await program.methods.depositBond()
+        .accounts({ authority: sponMiner.publicKey, rentPayer: sponsor.publicKey })
+        .signers([sponMiner, sponsor])
+        .rpc();
+
+      // Enable a 2-second rate limit so the test runs in reasonable time.
+      // selfMiner → 2s cooldown; sponMiner → 4s cooldown.
+      await program.methods.setRateLimit(new anchor.BN(2))
+        .accounts({ authority: wallet.publicKey })
+        .rpc();
+
+      async function claimAs(miner: anchor.web3.Keypair) {
+        const ata = getAssociatedTokenAddressSync(mint, miner.publicKey);
+        const state = await program.account.globalState.fetch(globalStatePDA);
+        const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
+        await program.methods.claim(nonce, new anchor.BN(0))
+          .accounts({
+            feePayer: miner.publicKey,
+            userTokenAccount: ata,
+            feePayerTokenAccount: ata,
+            authority: miner.publicKey,
+          })
+          .signers([miner])
+          .rpc();
+      }
+
+      // First claim for both — establishes last_claim_time.
+      await claimAs(selfMiner);
+      await claimAs(sponMiner);
+
+      // Wait 2.5s — past the self-funded cooldown but inside the sponsored one.
+      await new Promise(r => setTimeout(r, 2500));
+
+      // Self-funded miner can claim again (2s cooldown elapsed).
+      await claimAs(selfMiner);
+
+      // Sponsored miner is still gated (needs 4s, only 2.5s elapsed).
+      try {
+        await claimAs(sponMiner);
+        throw new Error("sponsored miner should still be rate-limited");
+      } catch (err: any) {
+        expect(err.message).to.include("RateLimitExceeded");
+      }
+
+      // After another 2s (total 4.5s since sponsored's first claim), sponsored can claim.
+      await new Promise(r => setTimeout(r, 2000));
+      await claimAs(sponMiner);
 
       // Reset rate limit so subsequent tests are unaffected
       await program.methods.setRateLimit(new anchor.BN(0))

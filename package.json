@@ -9,6 +9,7 @@
     "rate-limit": "ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/devnet-wallet.json ts-node -P tsconfig.json scripts/set_rate_limit.ts",
     "team-claim": "ts-node -P tsconfig.json scripts/claim_team_vest.ts",
     "sync-idl": "cp target/idl/terminuscoin.json miner-ui/idl/terminuscoin.json && echo 'IDL synced to miner-ui/idl/'",
+    "redeploy:devnet": "bash scripts/redeploy-devnet.sh",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },

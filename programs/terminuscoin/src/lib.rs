@@ -211,12 +211,25 @@ pub mod terminuscoin {
         require!(!ctx.accounts.user_state.frozen, ErrorCode::AccountFrozen);
 
         // ── Rate limit (Phase 1 only — sunsets at year 1) ─────────────────────
+        // Sponsored bonds (rent_payer != authority — i.e. relayer-funded
+        // onboarding) get 2× the cooldown. Self-funded bonds get the base
+        // cooldown. This nudges Sybil farms away from the relayer subsidy
+        // path: free SOL onboarding comes with halved throughput, forever
+        // (or until the user withdraws + re-bonds from their own SOL, which
+        // costs them ~0.001 SOL per wallet — the legitimate escape hatch).
         let elapsed_since_launch = current_time
             .saturating_sub(ctx.accounts.global_state.launch_time)
             .max(0);
         let in_phase1 = elapsed_since_launch < PHASE2_ACTIVATION_SECS;
 
-        let rate_limit = ctx.accounts.global_state.rate_limit_seconds;
+        let base_rate_limit = ctx.accounts.global_state.rate_limit_seconds;
+        let was_sponsored = ctx.accounts.bond_account.rent_payer != ctx.accounts.authority.key();
+        let rate_limit = if was_sponsored {
+            base_rate_limit.saturating_mul(2)
+        } else {
+            base_rate_limit
+        };
+
         if in_phase1 && rate_limit > 0 {
             let last = ctx.accounts.user_state.last_claim_time;
             require!(

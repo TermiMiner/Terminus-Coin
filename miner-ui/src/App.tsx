@@ -133,10 +133,29 @@ export default function App() {
   const sharedActive = !!shared && isBurner;
   const localActive  = !shared && isBurner && !!relayer.publicKey;
 
+  // Single source of truth for the user-visible mining mode. Used to label
+  // the mode bar, gate the tip selector, and disable Start during the
+  // shared-info loading race that previously sent burner users into
+  // self-fund mode without realizing it.
+  // Burner self-fund needs ≥ ~0.003 SOL (rent for bond + UserState + ATA + tx fee).
+  // Repeat claims need much less, but we use the first-claim threshold as a
+  // conservative "ready" check.
+  const SELF_FUND_MIN_LAMPORTS = 3_500_000;
+  const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
+  type MiningMode = "loading" | "shared" | "local" | "self-fund-ready" | "self-fund-needs-topup" | "no-wallet";
+  let miningMode: MiningMode;
+  if (!activeWallet.publicKey) miningMode = "no-wallet";
+  else if (isBurner && shared === null && burnerBalance === null) miningMode = "loading";
+  else if (sharedActive) miningMode = "shared";
+  else if (localActive) miningMode = "local";
+  else if (burnerSolReady) miningMode = "self-fund-ready";
+  else if (isBurner) miningMode = "self-fund-needs-topup";
+  else miningMode = "self-fund-ready"; // Phantom or other external wallet — assume user manages SOL
+
   // Tip is only meaningful when a relayer is active. In self-fund mode, the
   // "tip" would be a no-op self-transfer (miner ATA → miner ATA) that just
   // burns compute units and confuses balances. Force 0 unless relayed.
-  const effectiveTip = (sharedActive || localActive) ? claimTip : 0;
+  const effectiveTip = (miningMode === "shared" || miningMode === "local") ? claimTip : 0;
   const { status, logs, hashrate, start: rawStart, stop } = useMiner(
     connection,
     activeWallet,
@@ -172,7 +191,12 @@ export default function App() {
   }, [logs]);
 
   const mining = status === "mining" || status === "submitting";
-  const canMine = !!activeWallet.publicKey && !!chain && !chain.paused;
+  // Gate Start while mining mode is still resolving — previously, clicking
+  // Start before shared relayer info loaded silently sent the user into
+  // self-fund mode without them realizing.
+  const canMine = !!activeWallet.publicKey && !!chain && !chain.paused
+    && miningMode !== "loading" && miningMode !== "no-wallet"
+    && miningMode !== "self-fund-needs-topup";
 
   function handleGenerateBurner() {
     burner.generate();
@@ -370,51 +394,80 @@ export default function App() {
         </div>
       )}
 
-      {/* Relayer — shared (server) takes precedence; local (browser) is fallback */}
-      {shared ? (
-        <div className="wallet-bar">
-          <span className="wallet-address" style={{ color: sharedActive ? "#00ff99" : "var(--grey)" }}>
-            SHARED RELAYER {sharedActive ? "ON" : "READY"}:
-          </span>
-          <span className="wallet-address">
-            {shared.pubkey.toBase58()} ({(shared.balance / 1e9).toFixed(4)} SOL)
-          </span>
-          {/* Quota info — only present when KV is provisioned on the server */}
-          {shared.dailyRemaining !== undefined && (
-            <span className="wallet-address" title="Total relayer SOL outflow remaining today (resets daily)">
-              · {(shared.dailyRemaining / 1e9).toFixed(3)} SOL left today
+      {/* MODE — single source of truth for how the next claim will be routed.
+          Replaces the prior SHARED/LOCAL RELAYER bars which let users guess. */}
+      {activeWallet.publicKey && (() => {
+        const modeColor =
+          miningMode === "shared" || miningMode === "local" ? "#00ff99"
+          : miningMode === "self-fund-ready" ? "#00ff99"
+          : miningMode === "self-fund-needs-topup" ? "#ff9933"
+          : "var(--grey)";
+        const modeLabel =
+          miningMode === "shared" ? "VIA SHARED RELAYER"
+          : miningMode === "local" ? "VIA LOCAL RELAYER"
+          : miningMode === "self-fund-ready" ? "SELF-FUND"
+          : miningMode === "self-fund-needs-topup" ? "SELF-FUND (needs topup)"
+          : miningMode === "loading" ? "INITIALISING…"
+          : "NO WALLET";
+        return (
+          <div className="wallet-bar">
+            <span className="wallet-address" style={{ color: modeColor }}>
+              MODE: {modeLabel}
             </span>
-          )}
-          {shared.wallet && (
-            <span className="wallet-address" title="Topup grants remaining for this wallet — bootstrap is one-time per address">
-              · {shared.wallet.topupsRemaining}/{shared.wallet.topupsMax} free topups
-            </span>
-          )}
-        </div>
-      ) : (
-        <div className="wallet-bar">
-          <span className="wallet-address" style={{ color: localActive ? "#00ff99" : "var(--grey)" }}>
-            LOCAL RELAYER {localActive ? "ON" : (relayer.publicKey ? "READY" : "OFF")}:
-          </span>
-          {!relayer.publicKey && (
-            <>
-              <button className="btn" onClick={handleGenerateRelayer}>[ GENERATE RELAYER ]</button>
-              <button className="btn" onClick={handleImportRelayer}>[ IMPORT RELAYER ]</button>
-            </>
-          )}
-          {relayer.publicKey && (
-            <>
+            {miningMode === "shared" && shared && (
+              <>
+                <span className="wallet-address">
+                  relayer {shared.pubkey.toBase58().slice(0, 8)}… ({(shared.balance / 1e9).toFixed(4)} SOL)
+                </span>
+                {shared.dailyRemaining !== undefined && (
+                  <span className="wallet-address" title="Total relayer SOL outflow remaining today (resets daily)">
+                    · {(shared.dailyRemaining / 1e9).toFixed(3)} SOL left today
+                  </span>
+                )}
+                {shared.wallet && (
+                  <span className="wallet-address" title="Topup grants remaining for this wallet">
+                    · {shared.wallet.topupsRemaining}/{shared.wallet.topupsMax} free topups
+                  </span>
+                )}
+              </>
+            )}
+            {miningMode === "local" && relayer.publicKey && (
               <span className="wallet-address">
-                {relayer.publicKey.toBase58()}
+                relayer {relayer.publicKey.toBase58().slice(0, 8)}…
                 {relayerBalance !== null && ` (${(relayerBalance / 1e9).toFixed(4)} SOL)`}
               </span>
-              {burner.publicKey && (
-                <button className="btn" onClick={handleManualTopUp}>[ TOP UP BURNER ]</button>
-              )}
-              <button className="btn" onClick={handleExportRelayer}>[ EXPORT ]</button>
-              <button className="btn" onClick={handleClearRelayer}>[ CLEAR ]</button>
-            </>
-          )}
+            )}
+            {(miningMode === "self-fund-ready" || miningMode === "self-fund-needs-topup") && isBurner && (
+              <span className="wallet-address">
+                burner {burnerBalance !== null ? `${(burnerBalance / 1e9).toFixed(4)} SOL` : "…"}
+                {miningMode === "self-fund-needs-topup" && relayer.publicKey && burner.publicKey && (
+                  <> · <button className="btn" onClick={handleManualTopUp} style={{ marginLeft: 4 }}>[ TOP UP BURNER ]</button></>
+                )}
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Local-relayer setup row — only when there's no shared and no local yet,
+          and the user is on a burner (so they actually need one). */}
+      {!shared && isBurner && !relayer.publicKey && (
+        <div className="wallet-bar">
+          <span className="wallet-address" style={{ color: "var(--grey)" }}>
+            LOCAL RELAYER (optional):
+          </span>
+          <button className="btn" onClick={handleGenerateRelayer}>[ GENERATE RELAYER ]</button>
+          <button className="btn" onClick={handleImportRelayer}>[ IMPORT RELAYER ]</button>
+        </div>
+      )}
+
+      {/* Local-relayer management row — visible once one is set up. */}
+      {!shared && isBurner && relayer.publicKey && (
+        <div className="wallet-bar">
+          <span className="wallet-address" style={{ color: "var(--grey)" }}>LOCAL RELAYER:</span>
+          <span className="wallet-address">{relayer.publicKey.toBase58().slice(0, 16)}…</span>
+          <button className="btn" onClick={handleExportRelayer}>[ EXPORT ]</button>
+          <button className="btn" onClick={handleClearRelayer}>[ CLEAR ]</button>
         </div>
       )}
 
@@ -429,10 +482,11 @@ export default function App() {
       )}
 
       {/* Claim tip — only meaningful when a relayer is active. Self-fund mode
-          hides this entirely. Presets are in TERM raw units (6 decimals);
-          MAX_TIP_TERM = 5 TERM = 5_000_000 raw. Default 0 = no tip.
-          When bootstrap mode is on, repeat claims must tip at least minTipTerm. */}
-      {(sharedActive || localActive) && (
+          hides this entirely (effectiveTip is forced to 0 anyway). Presets
+          are in TERM raw units (6 decimals); MAX_TIP_TERM = 5 TERM = 5_000_000
+          raw. Default 0 = no tip. When bootstrap mode is on, repeat claims
+          must tip at least minTipTerm. */}
+      {(miningMode === "shared" || miningMode === "local") && (
         <div className="wallet-bar">
           <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
             CLAIM TIP:

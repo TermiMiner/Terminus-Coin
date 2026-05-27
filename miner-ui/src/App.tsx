@@ -126,31 +126,45 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [connection, burner, relayer, walletVersion, activeWallet.publicKey?.toBase58()]);
 
-  // Choose broadcaster: shared (server) > local (browser) > none.
-  const broadcaster: BroadcastAdapter | undefined =
-    shared ? sharedRelayerAdapter(shared.pubkey)
-    : (isBurner ? localRelayerAdapter(relayer) ?? undefined : undefined);
-  const sharedActive = !!shared && isBurner;
-  const localActive  = !shared && isBurner && !!relayer.publicKey;
+  // Availability — relayers that are set up for this user. Used for topup
+  // decisions (the start() wrapper uses these to choose how to fund a
+  // burner that's running low), independent of which routing the next
+  // claim will take.
+  const sharedAvailable = !!shared && isBurner;
+  const localAvailable  = !shared && isBurner && !!relayer.publicKey;
 
-  // Single source of truth for the user-visible mining mode. Used to label
-  // the mode bar, gate the tip selector, and disable Start during the
-  // shared-info loading race that previously sent burner users into
-  // self-fund mode without realizing it.
-  // Burner self-fund needs ≥ ~0.003 SOL (rent for bond + UserState + ATA + tx fee).
-  // Repeat claims need much less, but we use the first-claim threshold as a
-  // conservative "ready" check.
+  // Routing preference — self-fund FIRST when the wallet can pay its own
+  // way. Each self-funded claim costs ~5K lamports; through a relayer it
+  // costs the relayer ~5K SOL AND the user a 0.5 TERM tip (under bootstrap
+  // mode). Self-fund is strictly better when feasible. Relayer routing is
+  // reserved as a SUBSIDY/fallback for fresh wallets without SOL.
+  //
+  // Burner self-fund needs ≥ ~0.003 SOL (bond + UserState + ATA + tx fee
+  // for first claim). Repeat claims need far less; the first-claim
+  // threshold is the conservative "ready" check.
   const SELF_FUND_MIN_LAMPORTS = 3_500_000;
   const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
+  const externalWalletSelfFundable = !isBurner && !!activeWallet.publicKey;
   type MiningMode = "loading" | "shared" | "local" | "self-fund-ready" | "self-fund-needs-topup" | "no-wallet";
   let miningMode: MiningMode;
   if (!activeWallet.publicKey) miningMode = "no-wallet";
   else if (isBurner && shared === null && burnerBalance === null) miningMode = "loading";
-  else if (sharedActive) miningMode = "shared";
-  else if (localActive) miningMode = "local";
-  else if (burnerSolReady) miningMode = "self-fund-ready";
+  else if (burnerSolReady || externalWalletSelfFundable) miningMode = "self-fund-ready";
+  else if (sharedAvailable) miningMode = "shared";
+  else if (localAvailable) miningMode = "local";
   else if (isBurner) miningMode = "self-fund-needs-topup";
-  else miningMode = "self-fund-ready"; // Phantom or other external wallet — assume user manages SOL
+  else miningMode = "self-fund-ready"; // unreachable in practice — sanity fallback
+
+  // Broadcaster is derived from the mining mode. Self-fund modes don't use
+  // a broadcaster (the wallet signs directly).
+  const broadcaster: BroadcastAdapter | undefined =
+    miningMode === "shared" && shared ? sharedRelayerAdapter(shared.pubkey)
+    : miningMode === "local" ? (localRelayerAdapter(relayer) ?? undefined)
+    : undefined;
+
+  // Backwards-compat shims used in the burner-warning text below.
+  const sharedActive = miningMode === "shared";
+  const localActive  = miningMode === "local";
 
   // Tip is only meaningful when a relayer is active. In self-fund mode, the
   // "tip" would be a no-op self-transfer (miner ATA → miner ATA) that just
@@ -170,9 +184,12 @@ export default function App() {
     }
     if (burnerBalance >= BURNER_TOPUP_THRESHOLD) { rawStart(); return; }
     try {
-      if (sharedActive) {
+      // Topup uses whichever relayer is AVAILABLE, regardless of which
+      // mode mining will use afterwards. (Burner will likely self-fund
+      // claims once topped up.)
+      if (sharedAvailable) {
         await sharedTopUp(burner.publicKey);
-      } else if (localActive) {
+      } else if (localAvailable) {
         await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
       } else {
         // No relayer at all — burner has to fund itself. Just start; mining
@@ -269,11 +286,19 @@ export default function App() {
     refreshWallets();
   }
 
-  async function handleManualTopUp() {
-    if (!connection || !relayer.publicKey || !burner.publicKey) return;
+  async function handleTopUpBurner() {
+    if (!burner.publicKey) return;
     try {
-      const sig = await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
-      alert(`Top-up sent: ${(BURNER_TOPUP_LAMPORTS / 1e9).toFixed(3)} SOL\ntx: ${sig.slice(0, 16)}…`);
+      if (sharedAvailable) {
+        const res = await sharedTopUp(burner.publicKey);
+        const detail = res.skipped ? "(already funded)" : `tx: ${res.signature?.slice(0, 16)}…`;
+        alert(`Shared-relayer top-up: ${detail}`);
+      } else if (localAvailable && connection) {
+        const sig = await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
+        alert(`Local-relayer top-up: ${(BURNER_TOPUP_LAMPORTS / 1e9).toFixed(3)} SOL\ntx: ${sig.slice(0, 16)}…`);
+      } else {
+        alert("No relayer available to top up the burner — send SOL to the burner address manually.");
+      }
     } catch (err: any) {
       alert(`Top-up failed: ${err.message ?? err}`);
     }
@@ -440,9 +465,14 @@ export default function App() {
             {(miningMode === "self-fund-ready" || miningMode === "self-fund-needs-topup") && isBurner && (
               <span className="wallet-address">
                 burner {burnerBalance !== null ? `${(burnerBalance / 1e9).toFixed(4)} SOL` : "…"}
-                {miningMode === "self-fund-needs-topup" && relayer.publicKey && burner.publicKey && (
-                  <> · <button className="btn" onClick={handleManualTopUp} style={{ marginLeft: 4 }}>[ TOP UP BURNER ]</button></>
+                {miningMode === "self-fund-needs-topup" && burner.publicKey && (sharedAvailable || localAvailable) && (
+                  <> · <button className="btn" onClick={handleTopUpBurner} style={{ marginLeft: 4 }}>[ TOP UP BURNER ]</button></>
                 )}
+              </span>
+            )}
+            {miningMode === "self-fund-ready" && isBurner && sharedAvailable && (
+              <span className="wallet-address" style={{ color: "var(--grey)" }} title="If your burner runs low, the shared relayer can top it up">
+                · shared relayer available (fallback)
               </span>
             )}
           </div>

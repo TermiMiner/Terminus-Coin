@@ -452,77 +452,86 @@ describe("terminuscoin – full feature suite", () => {
         .rpc();
     });
 
-    it("sponsored bonds get 2× cooldown vs self-funded bonds", async () => {
-      // Setup: two fresh wallets, two different rent_payer postures.
-      //   selfMiner: deposits its own bond  (rent_payer = self)
-      //   sponMiner: bond deposited with relayer-as-rent_payer (sponsored)
+    it("free-ride claims (relayer gas + no tip) get 2×; paying gas or tip → 1×", async () => {
+      // sponsor = acts as fee_payer for "relayer-funded" claims (fee_payer ≠ authority).
+      // rent_payer on the bond no longer drives the cooldown; per-claim economics do.
       const sponsor = anchor.web3.Keypair.generate();
       await provider.connection.confirmTransaction(
-        await provider.connection.requestAirdrop(sponsor.publicKey, 1_000_000_000)
+        await provider.connection.requestAirdrop(sponsor.publicKey, 2_000_000_000)
       );
 
-      const selfMiner = anchor.web3.Keypair.generate();
-      const sponMiner = anchor.web3.Keypair.generate();
-      for (const m of [selfMiner, sponMiner]) {
+      const freeRideMiner = anchor.web3.Keypair.generate(); // fee_payer=sponsor, tip=0 → 2×
+      const tippingMiner  = anchor.web3.Keypair.generate(); // fee_payer=sponsor, tip>0 → 1×
+      const selfMiner     = anchor.web3.Keypair.generate(); // fee_payer=self,    tip=0 → 1×
+
+      for (const m of [freeRideMiner, tippingMiner, selfMiner]) {
         await provider.connection.confirmTransaction(
           await provider.connection.requestAirdrop(m.publicKey, 1_000_000_000)
         );
         await createAssociatedTokenAccount(provider.connection, wallet.payer, mint, m.publicKey);
       }
+      // sponsor needs a TERM ATA to receive tips
+      await createAssociatedTokenAccount(provider.connection, wallet.payer, mint, sponsor.publicKey);
 
-      await program.methods.depositBond()
-        .accounts({ authority: selfMiner.publicKey, rentPayer: selfMiner.publicKey })
-        .signers([selfMiner])
-        .rpc();
-      await program.methods.depositBond()
-        .accounts({ authority: sponMiner.publicKey, rentPayer: sponsor.publicKey })
-        .signers([sponMiner, sponsor])
-        .rpc();
+      // All bonds self-funded — rent_payer is irrelevant to cooldown now
+      for (const m of [freeRideMiner, tippingMiner, selfMiner]) {
+        await program.methods.depositBond()
+          .accounts({ authority: m.publicKey, rentPayer: m.publicKey })
+          .signers([m])
+          .rpc();
+      }
 
-      // Enable a 2-second rate limit so the test runs in reasonable time.
-      // selfMiner → 2s cooldown; sponMiner → 4s cooldown.
+      // 2-second base rate limit: free-ride → 4s, others → 2s
       await program.methods.setRateLimit(new anchor.BN(2))
         .accounts({ authority: wallet.publicKey })
         .rpc();
 
-      async function claimAs(miner: anchor.web3.Keypair) {
+      async function claimWith(
+        miner: anchor.web3.Keypair,
+        feePayer: anchor.web3.Keypair,
+        tip: number,
+      ) {
         const ata = getAssociatedTokenAddressSync(mint, miner.publicKey);
+        const fpAta = feePayer.publicKey.equals(miner.publicKey)
+          ? ata
+          : getAssociatedTokenAddressSync(mint, feePayer.publicKey);
         const state = await program.account.globalState.fetch(globalStatePDA);
         const nonce = mineNonce(state.lastHash as number[], miner.publicKey, state.difficulty);
-        await program.methods.claim(nonce, new anchor.BN(0))
+        const extraSigners = feePayer.publicKey.equals(miner.publicKey) ? [] : [feePayer];
+        await program.methods.claim(nonce, new anchor.BN(tip))
           .accounts({
-            feePayer: miner.publicKey,
+            feePayer: feePayer.publicKey,
             userTokenAccount: ata,
-            feePayerTokenAccount: ata,
+            feePayerTokenAccount: fpAta,
             authority: miner.publicKey,
           })
-          .signers([miner])
+          .signers([miner, ...extraSigners])
           .rpc();
       }
 
-      // First claim for both — establishes last_claim_time.
-      await claimAs(selfMiner);
-      await claimAs(sponMiner);
-
-      // Wait 2.5s — past the self-funded cooldown but inside the sponsored one.
-      await new Promise(r => setTimeout(r, 2500));
-
-      // Self-funded miner can claim again (2s cooldown elapsed).
-      await claimAs(selfMiner);
-
-      // Sponsored miner is still gated (needs 4s, only 2.5s elapsed).
+      // ── Case A: free ride (fee_payer ≠ authority, tip = 0) → 2× cooldown ──
+      await claimWith(freeRideMiner, sponsor, 0);          // first claim, T0
+      await new Promise(r => setTimeout(r, 2500));          // 2.5s: past 1×, before 2×
       try {
-        await claimAs(sponMiner);
-        throw new Error("sponsored miner should still be rate-limited");
+        await claimWith(freeRideMiner, sponsor, 0);
+        throw new Error("free-ride miner should be rate-limited at 2.5s (needs 4s)");
       } catch (err: any) {
         expect(err.message).to.include("RateLimitExceeded");
       }
+      await new Promise(r => setTimeout(r, 2000));          // total 4.5s — now past 2×
+      await claimWith(freeRideMiner, sponsor, 0);           // succeeds
 
-      // After another 2s (total 4.5s since sponsored's first claim), sponsored can claim.
-      await new Promise(r => setTimeout(r, 2000));
-      await claimAs(sponMiner);
+      // ── Case B: paid tip (fee_payer ≠ authority, tip > 0) → 1× cooldown ──
+      const MIN_TIP = 500_000; // 0.5 TERM
+      await claimWith(tippingMiner, sponsor, MIN_TIP);      // first claim
+      await new Promise(r => setTimeout(r, 2500));           // 2.5s: past 1×
+      await claimWith(tippingMiner, sponsor, MIN_TIP);      // succeeds at 2.5s
 
-      // Reset rate limit so subsequent tests are unaffected
+      // ── Case C: self-fund (fee_payer = authority, tip = 0) → 1× cooldown ──
+      await claimWith(selfMiner, selfMiner, 0);              // first claim
+      await new Promise(r => setTimeout(r, 2500));           // 2.5s: past 1×
+      await claimWith(selfMiner, selfMiner, 0);              // succeeds at 2.5s
+
       await program.methods.setRateLimit(new anchor.BN(0))
         .accounts({ authority: wallet.publicKey })
         .rpc();

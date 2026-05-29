@@ -145,11 +145,17 @@ export default function App() {
   const SELF_FUND_MIN_LAMPORTS = 3_500_000;
   const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
   const externalWalletSelfFundable = !isBurner && !!activeWallet.publicKey;
+  // Keep topped-up wallets on the shared-relayer path so the on-chain
+  // is_free_ride check (fee_payer ≠ authority) can apply the 2× cooldown.
+  // Without this, a wallet that received free SOL via /api/topup would
+  // immediately flip to self-fund (fee_payer = authority → 1× cooldown).
+  const burnerWasTopped = isBurner && !!burner.publicKey &&
+    localStorage.getItem(`topup_funded:${burner.publicKey.toBase58()}`) === '1';
   type MiningMode = "loading" | "shared" | "local" | "self-fund-ready" | "self-fund-needs-topup" | "no-wallet";
   let miningMode: MiningMode;
   if (!activeWallet.publicKey) miningMode = "no-wallet";
   else if (isBurner && shared === null && burnerBalance === null) miningMode = "loading";
-  else if (burnerSolReady || externalWalletSelfFundable) miningMode = "self-fund-ready";
+  else if ((burnerSolReady && !burnerWasTopped) || externalWalletSelfFundable) miningMode = "self-fund-ready";
   else if (sharedAvailable) miningMode = "shared";
   else if (localAvailable) miningMode = "local";
   else if (isBurner) miningMode = "self-fund-needs-topup";
@@ -189,6 +195,7 @@ export default function App() {
       // claims once topped up.)
       if (sharedAvailable) {
         await sharedTopUp(burner.publicKey);
+        localStorage.setItem(`topup_funded:${burner.publicKey.toBase58()}`, '1');
       } else if (localAvailable) {
         await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
       } else {
@@ -291,6 +298,7 @@ export default function App() {
     try {
       if (sharedAvailable) {
         const res = await sharedTopUp(burner.publicKey);
+        localStorage.setItem(`topup_funded:${burner.publicKey.toBase58()}`, '1');
         const detail = res.skipped ? "(already funded)" : `tx: ${res.signature?.slice(0, 16)}…`;
         alert(`Shared-relayer top-up: ${detail}`);
       } else if (localAvailable && connection) {

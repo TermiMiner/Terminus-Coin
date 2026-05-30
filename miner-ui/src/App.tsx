@@ -72,6 +72,20 @@ export default function App() {
     localStorage.setItem("terminus.claim_tip", String(claimTip));
   }, [claimTip]);
 
+  // Mining-mode override: lets the user pin routing manually instead of
+  // the auto decision tree. "auto" preserves the existing self-fund-preferred
+  // behavior. Explicit modes that aren't actually available (e.g. "shared"
+  // when no shared relayer is configured) silently fall back to auto.
+  type ModePreference = "auto" | "self-fund" | "shared" | "local";
+  const [modePreference, setModePreference] = useState<ModePreference>(() => {
+    const stored = localStorage.getItem("terminus.mode_preference");
+    if (stored === "self-fund" || stored === "shared" || stored === "local") return stored;
+    return "auto";
+  });
+  useEffect(() => {
+    localStorage.setItem("terminus.mode_preference", modePreference);
+  }, [modePreference]);
+
   // Background tab detection — mobile browsers throttle JS in hidden tabs.
   // When tab is hidden the status pill shows "TAB PAUSED" so users understand
   // why mining stalled when they return.
@@ -149,6 +163,12 @@ export default function App() {
   let miningMode: MiningMode;
   if (!activeWallet.publicKey) miningMode = "no-wallet";
   else if (isBurner && shared === null && burnerBalance === null) miningMode = "loading";
+  // Explicit user override — but only honored if actually achievable.
+  else if (modePreference === "shared" && sharedAvailable) miningMode = "shared";
+  else if (modePreference === "local" && localAvailable) miningMode = "local";
+  else if (modePreference === "self-fund" && (burnerSolReady || externalWalletSelfFundable)) miningMode = "self-fund-ready";
+  else if (modePreference === "self-fund" && isBurner) miningMode = "self-fund-needs-topup";
+  // Auto fallthrough: self-fund preferred when burner has SOL, else relayer.
   else if (burnerSolReady || externalWalletSelfFundable) miningMode = "self-fund-ready";
   else if (sharedAvailable) miningMode = "shared";
   else if (localAvailable) miningMode = "local";
@@ -418,6 +438,56 @@ export default function App() {
           </span>
         </div>
       )}
+
+      {/* Mode preference selector — user override for routing. AUTO defers
+          to the self-fund-preferred decision tree; explicit choices pin the
+          routing if achievable, otherwise silently fall back to auto. */}
+      {activeWallet.publicKey && (() => {
+        const canShared = sharedAvailable;
+        const canLocal = localAvailable;
+        const canSelf = burnerSolReady || externalWalletSelfFundable || isBurner;
+        const options: { value: ModePreference; label: string; enabled: boolean; title: string }[] = [
+          { value: "auto",      label: "AUTO",      enabled: true,
+            title: "Self-fund when burner has SOL, otherwise route through relayer" },
+          { value: "self-fund", label: "SELF-FUND", enabled: canSelf,
+            title: canSelf ? "Always pay your own SOL" : "Self-fund requires a wallet" },
+          { value: "shared",    label: "SHARED",    enabled: canShared,
+            title: canShared ? "Always route through the shared relayer" : "No shared relayer is configured" },
+          { value: "local",     label: "LOCAL",     enabled: canLocal,
+            title: canLocal ? "Always route through your local relayer" : "No local relayer is set up" },
+        ];
+        // Detect when the user picked a mode that isn't available — show a hint.
+        const requested = modePreference;
+        const honored =
+          requested === "auto" ||
+          (requested === "shared" && canShared) ||
+          (requested === "local" && canLocal) ||
+          (requested === "self-fund" && canSelf);
+        return (
+          <div className="wallet-bar">
+            <span className="wallet-address" title="Pin how the next claim will be routed; AUTO uses the smart default">
+              ROUTE:
+            </span>
+            {options.map(({ value, label, enabled, title }) => (
+              <button
+                key={value}
+                className={`btn ${modePreference === value ? "active" : ""}`}
+                onClick={() => setModePreference(value)}
+                disabled={!enabled}
+                title={title}
+                style={!enabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+              >
+                [ {label} ]
+              </button>
+            ))}
+            {!honored && (
+              <span className="wallet-address" style={{ color: "#ff9933" }} title="Falling back to AUTO because the chosen mode isn't currently available">
+                · fallback → auto
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* MODE — single source of truth for how the next claim will be routed.
           Replaces the prior SHARED/LOCAL RELAYER bars which let users guess. */}

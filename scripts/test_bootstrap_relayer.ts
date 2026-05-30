@@ -351,13 +351,11 @@ async function main() {
   });
 
   // ─── Test 4: repeat claim with tip=minTipTerm → 200 ──────────────────
-  // tip > 0 → is_free_ride = false → rate_limit = base (not 2×).
-  // The on-chain check uses THIS claim's economics, so the wait is base+5s
-  // regardless of what happened in test 2.
+  // The relay endpoint will broadcast this one, so the on-chain
+  // rate_limit_seconds cooldown applies — wait it out.
   const { rateLimitSeconds } = await readGlobalState();
-  const baseCooldownSec = Number(rateLimitSeconds);
-  const wait4Sec = baseCooldownSec + 5;
-  console.log(`${DIM}waiting ${wait4Sec}s (= base cooldown of ${baseCooldownSec}s + 5s buffer) for rate limit to clear...${RST}`);
+  const wait4Sec = Number(rateLimitSeconds) + 5;
+  console.log(`${DIM}waiting ${wait4Sec}s (= cooldown ${rateLimitSeconds}s + 5s buffer) for rate limit to clear...${RST}`);
   await new Promise(r => setTimeout(r, wait4Sec * 1000));
 
   await test("4. Repeat claim with tip=minTipTerm → relayer ATA gains exactly minTipTerm", async () => {
@@ -383,32 +381,6 @@ async function main() {
     }
     console.log(`     ${DIM}→ broadcast sig: ${body.signature.slice(0, 24)}...${RST}`);
     console.log(`     ${DIM}→ relayer ATA Δ +${delta} raw = +${Number(delta)/1e6} TERM ✓${RST}`);
-  });
-
-  // ─── Test 5: paid-tip gasless claim → 1× cooldown ────────────────────
-  // Confirms that tip > 0 on the current claim → is_free_ride = false →
-  // rate_limit = base. After test 4 (also tip=minTipTerm), waiting base+3s
-  // is sufficient for the next paid claim to succeed.
-  //
-  // Note: the 2× free-ride rule (tip=0, fee_payer=relayer → 2× cooldown) is
-  // not live-verifiable here — the relay's tip-floor blocks tip=0 repeat
-  // claims at the server before they reach the chain (test 3). The 2× path
-  // is covered by the unit test (Case A in terminus-coin.ts).
-  await test(`5. Paid-tip gasless claim → 1× cooldown (base+3s is enough after a tip)`, async () => {
-    const earlyWait = baseCooldownSec + 3;
-    console.log(`     ${DIM}waiting ${earlyWait}s (> 1× base) from test 4's paid claim...${RST}`);
-    await new Promise(r => setTimeout(r, earlyWait * 1000));
-
-    const tx = await buildRepeatClaim(minTipTerm);
-    const { status, body } = await submitRelay(tx);
-    if (status !== 200) {
-      throw new Error(
-        `expected 200 — paid-tip claim should have 1× cooldown after ${earlyWait}s, ` +
-        `got status=${status} body=${JSON.stringify(body).slice(0, 200)}`,
-      );
-    }
-    console.log(`     ${DIM}→ claim succeeded at base+3s: tip>0 → 1× cooldown ✓${RST}`);
-    console.log(`     ${DIM}→ sig: ${body.signature?.slice(0, 24)}...${RST}`);
   });
 
   console.log();

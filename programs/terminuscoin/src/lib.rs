@@ -211,26 +211,12 @@ pub mod terminuscoin {
         require!(!ctx.accounts.user_state.frozen, ErrorCode::AccountFrozen);
 
         // ── Rate limit (Phase 1 only — sunsets at year 1) ─────────────────────
-        // Free-ride = relayer pays gas (fee_payer ≠ authority) AND tip == 0.
-        // Either form of contribution — paying your own gas OR paying a TERM
-        // tip — earns the base cooldown. Both free simultaneously → 2× penalty.
-        // Per-claim and dynamic: paying a tip on the very next claim immediately
-        // drops back to 1×; no withdraw/re-bond escape hatch needed.
         let elapsed_since_launch = current_time
             .saturating_sub(ctx.accounts.global_state.launch_time)
             .max(0);
         let in_phase1 = elapsed_since_launch < PHASE2_ACTIVATION_SECS;
 
-        let base_rate_limit = ctx.accounts.global_state.rate_limit_seconds;
-        let tip = relayer_tip_term;
-        let is_free_ride = tip == 0
-            && ctx.accounts.fee_payer.key() != ctx.accounts.authority.key();
-        let rate_limit = if is_free_ride {
-            base_rate_limit.saturating_mul(2)
-        } else {
-            base_rate_limit
-        };
-
+        let rate_limit = ctx.accounts.global_state.rate_limit_seconds;
         if in_phase1 && rate_limit > 0 {
             let last = ctx.accounts.user_state.last_claim_time;
             require!(

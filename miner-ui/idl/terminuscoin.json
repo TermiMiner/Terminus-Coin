@@ -634,6 +634,40 @@
           }
         },
         {
+          "name": "user_state",
+          "docs": [
+            "Per-user state — checked for the `frozen` flag. `init_if_needed` so that",
+            "pure recipients (acquired TERM via transfer, then staked) aren't blocked",
+            "on a first call. A freshly-initialised UserState has frozen=false, so",
+            "the check passes for any wallet that has never been Sybil-flagged.",
+            "Miners always already have a UserState from prior claim() calls."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
           "name": "mint",
           "writable": true,
           "pda": {
@@ -682,6 +716,7 @@
         },
         {
           "name": "authority",
+          "writable": true,
           "signer": true,
           "relations": [
             "user_stake_account"
@@ -690,6 +725,10 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []

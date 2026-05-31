@@ -214,6 +214,13 @@ The program-level `authority` (separate from the Solana upgrade authority) contr
 - Day ≥30 of mainnet operation, assuming no critical incident: multisig signs `disable_freeze_authority()` — one-way, permanent
 - After that, the program is censorship-proof: no key, multisig, or DAO can freeze any wallet
 
+**Freeze scope (audited 2026-05-31):** the `frozen` flag is checked by `claim` and `claim_yield`. Other handlers are intentionally left open:
+- `stake` / `unstake` / `withdraw_bond*` — only move pre-existing principal. Blocking would seize assets rather than stop earning, which is hostile and out of scope for a Sybil flag.
+- `deposit_bond*` — meaningless without `claim`, which is already blocked.
+- `claim_team_vest` — gated by `has_one = team_wallet`; not user-facing.
+
+Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim_yield` had to be added explicitly because a frozen wallet that pre-staked would otherwise keep accruing yield from other miners' claims and could extract it post-freeze.
+
 ---
 
 ## 3. Deployer wallet hygiene

@@ -503,6 +503,13 @@ pub mod terminuscoin {
     // ── claim_yield ───────────────────────────────────────────────────────────
 
     pub fn claim_yield(ctx: Context<ClaimYield>) -> Result<()> {
+        // Freeze enforcement: a Sybil-flagged wallet that already staked would
+        // otherwise keep accruing yield from other miners' claims and could
+        // extract it post-freeze. Other staking-related handlers (stake,
+        // unstake, withdraw_bond*) intentionally remain open — they only move
+        // pre-existing principal, and freezing exit paths would be hostile.
+        require!(!ctx.accounts.user_state.frozen, ErrorCode::AccountFrozen);
+
         let accrued = {
             let pool = &ctx.accounts.stake_pool;
             let user = &ctx.accounts.user_stake_account;
@@ -740,6 +747,10 @@ pub mod terminuscoin {
         bond.kind = BOND_KIND_SOL;
         bond.term_amount = 0;
         bond.rent_payer = ctx.accounts.rent_payer.key();
+        // Explicit zero: makes the "no claim history yet" invariant local rather
+        // than relying on `init` zero-filling. Survives a future switch to
+        // init_if_needed without inheriting a stale cooldown.
+        bond.last_claim_time = 0;
         emit!(BondDeposited {
             miner: ctx.accounts.authority.key(),
             kind: BOND_KIND_SOL,
@@ -759,6 +770,8 @@ pub mod terminuscoin {
         bond.kind = BOND_KIND_TERM;
         bond.term_amount = TERM_BOND_AMOUNT;
         bond.rent_payer = ctx.accounts.rent_payer.key();
+        // Explicit zero — see deposit_bond.
+        bond.last_claim_time = 0;
 
         token::transfer(
             CpiContext::new(
@@ -1313,6 +1326,20 @@ pub struct ClaimYield<'info> {
     )]
     pub user_stake_account: Account<'info, UserStakeAccount>,
 
+    /// Per-user state — checked for the `frozen` flag. `init_if_needed` so that
+    /// pure recipients (acquired TERM via transfer, then staked) aren't blocked
+    /// on a first call. A freshly-initialised UserState has frozen=false, so
+    /// the check passes for any wallet that has never been Sybil-flagged.
+    /// Miners always already have a UserState from prior claim() calls.
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + 16,
+        seeds = [b"user_state", authority.key().as_ref()],
+        bump
+    )]
+    pub user_state: Account<'info, UserState>,
+
     #[account(mut, seeds = [b"mint"], bump)]
     pub mint: Account<'info, Mint>,
 
@@ -1327,8 +1354,10 @@ pub struct ClaimYield<'info> {
     #[account(seeds = [b"mint_authority"], bump)]
     pub mint_authority: UncheckedAccount<'info>,
 
+    #[account(mut)]
     pub authority: Signer<'info>,
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

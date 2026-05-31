@@ -22,10 +22,13 @@ import { executeStakingAction } from "./stakingActions";
 import logoUrl from "./assets/logo.jpg";
 
 // First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
-// + user_state rent (~0.00100 SOL) = ~0.00411 SOL one-time. Top up generously
-// so the first claim has room to spare.
-const BURNER_TOPUP_LAMPORTS  = 15_000_000;  // 0.015 SOL per top-up
-const BURNER_TOPUP_THRESHOLD = 8_000_000;   // top up when burner < 0.008 SOL
+// + user_state rent (~0.00100 SOL) = ~0.00411 SOL one-time. After setup, each
+// self-fund claim costs ~5K lamports of tx fee — so 0.0075 SOL of topup
+// covers setup + ~12 hours of 24/7 mining at the 60s cooldown.
+// Threshold sits BELOW the topup amount so a freshly-topped burner doesn't
+// immediately re-trigger the auto-topup path (which would fail per-wallet quota).
+const BURNER_TOPUP_LAMPORTS  = 7_500_000;   // 0.0075 SOL per top-up
+const BURNER_TOPUP_THRESHOLD = 4_000_000;   // re-topup attempt at burner < 0.004 SOL
 
 const TERM_VERSION = "0.1.0";
 

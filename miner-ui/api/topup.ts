@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { Redis } from "@upstash/redis";
 
-const TOPUP_LAMPORTS = 15_000_000;        // 0.015 SOL
+const TOPUP_LAMPORTS = 7_500_000;         // 0.0075 SOL — covers setup + ~12h of 24/7 mining
 const RECIPIENT_BALANCE_CAP = 8_000_000;  // refuse to top up if recipient already has more
 
 // Quotas (env overrides). Defaults are conservative — see RELAYER_OPERATOR.md.

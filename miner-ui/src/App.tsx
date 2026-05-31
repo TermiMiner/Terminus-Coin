@@ -242,10 +242,16 @@ export default function App() {
       rawStart(); return;
     }
     if (burnerBalance >= BURNER_TOPUP_THRESHOLD) { rawStart(); return; }
+    // In shared/local mode the relayer signs as both fee_payer and rent_payer,
+    // so the burner needs zero SOL. Skip the topup — otherwise we'd burn the
+    // per-wallet quota slot to deliver SOL that just sits unused. If the user
+    // later switches to a self-fund mode, the "needs topup" state will gate
+    // mining and the manual topup button handles it.
+    if (miningMode === "shared" || miningMode === "local") {
+      rawStart(); return;
+    }
     try {
-      // Topup uses whichever relayer is AVAILABLE, regardless of which
-      // mode mining will use afterwards. (Burner will likely self-fund
-      // claims once topped up.)
+      // Only reaches here in self-fund modes — burner actually needs the SOL.
       if (sharedAvailable) {
         await sharedTopUp(burner.publicKey);
       } else if (localAvailable) {

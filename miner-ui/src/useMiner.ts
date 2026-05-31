@@ -350,7 +350,11 @@ export function useMiner(
     }
 
     mine();
-  }, [connection, wallet]);
+    // broadcaster + relayerTipTerm MUST be in deps — without them, switching
+    // mode mid-session or before clicking Start leaves the captured closure
+    // pointing at the old routing (caused "tip doesn't deduct when SHARED
+    // selected" bug). Recreating on every render is cheap.
+  }, [connection, wallet, broadcaster, relayerTipTerm]);
 
   // keep startRef current so the auto-restart closure always calls the latest version
   useEffect(() => { startRef.current = start; }, [start]);

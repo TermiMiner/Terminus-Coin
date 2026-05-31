@@ -144,7 +144,11 @@ export default function App() {
   // decisions (the start() wrapper uses these to choose how to fund a
   // burner that's running low), independent of which routing the next
   // claim will take.
-  const sharedAvailable = !!shared && isBurner;
+  //
+  // Shared relayer accepts ANY wallet (Phantom included) — only the topup
+  // pathway is burner-specific. Local relayer keypair is browser-only and
+  // only meaningful in burner-mode setups.
+  const sharedAvailable = !!shared && !!activeWallet.publicKey;
   const localAvailable  = !shared && isBurner && !!relayer.publicKey;
 
   // Routing preference — self-fund FIRST when the wallet can pay its own
@@ -158,21 +162,32 @@ export default function App() {
   // threshold is the conservative "ready" check.
   const SELF_FUND_MIN_LAMPORTS = 3_500_000;
   const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
-  const externalWalletSelfFundable = !isBurner && !!activeWallet.publicKey;
-  type MiningMode = "loading" | "shared" | "local" | "self-fund-ready" | "self-fund-needs-topup" | "no-wallet";
+  // External wallets (Phantom) must actually have SOL to self-fund — connecting
+  // without funds is not enough. The previous logic let any connected Phantom
+  // pretend to be self-fund-ready, so users with empty wallets clicked Start
+  // and got cryptic "insufficient lamports" errors mid-claim.
+  const externalWalletSelfFundable = !isBurner && !!activeWallet.publicKey
+    && activeSolBalance !== null && activeSolBalance >= SELF_FUND_MIN_LAMPORTS;
+  const externalWalletNeedsFunding = !isBurner && !!activeWallet.publicKey
+    && activeSolBalance !== null && activeSolBalance < SELF_FUND_MIN_LAMPORTS;
+  type MiningMode = "loading" | "shared" | "local" | "self-fund-ready"
+                  | "self-fund-needs-topup" | "external-needs-funding" | "no-wallet";
   let miningMode: MiningMode;
   if (!activeWallet.publicKey) miningMode = "no-wallet";
   else if (isBurner && shared === null && burnerBalance === null) miningMode = "loading";
+  else if (!isBurner && activeSolBalance === null) miningMode = "loading";
   // Explicit user override — but only honored if actually achievable.
   else if (modePreference === "shared" && sharedAvailable) miningMode = "shared";
   else if (modePreference === "local" && localAvailable) miningMode = "local";
   else if (modePreference === "self-fund" && (burnerSolReady || externalWalletSelfFundable)) miningMode = "self-fund-ready";
   else if (modePreference === "self-fund" && isBurner) miningMode = "self-fund-needs-topup";
-  // Auto fallthrough: self-fund preferred when burner has SOL, else relayer.
+  else if (modePreference === "self-fund" && externalWalletNeedsFunding) miningMode = "external-needs-funding";
+  // Auto fallthrough: self-fund preferred when wallet has SOL, else relayer.
   else if (burnerSolReady || externalWalletSelfFundable) miningMode = "self-fund-ready";
   else if (sharedAvailable) miningMode = "shared";
   else if (localAvailable) miningMode = "local";
   else if (isBurner) miningMode = "self-fund-needs-topup";
+  else if (externalWalletNeedsFunding) miningMode = "external-needs-funding";
   else miningMode = "self-fund-ready"; // unreachable in practice — sanity fallback
 
   // Broadcaster is derived from the mining mode. Self-fund modes don't use
@@ -233,7 +248,8 @@ export default function App() {
   // self-fund mode without them realizing.
   const canMine = !!activeWallet.publicKey && !!chain && !chain.paused
     && miningMode !== "loading" && miningMode !== "no-wallet"
-    && miningMode !== "self-fund-needs-topup";
+    && miningMode !== "self-fund-needs-topup"
+    && miningMode !== "external-needs-funding";
 
   function handleGenerateBurner() {
     burner.generate();
@@ -496,12 +512,14 @@ export default function App() {
           miningMode === "shared" || miningMode === "local" ? "#00ff99"
           : miningMode === "self-fund-ready" ? "#00ff99"
           : miningMode === "self-fund-needs-topup" ? "#ff9933"
+          : miningMode === "external-needs-funding" ? "#ff9933"
           : "var(--grey)";
         const modeLabel =
           miningMode === "shared" ? "VIA SHARED RELAYER"
           : miningMode === "local" ? "VIA LOCAL RELAYER"
           : miningMode === "self-fund-ready" ? "SELF-FUND"
           : miningMode === "self-fund-needs-topup" ? "SELF-FUND (needs topup)"
+          : miningMode === "external-needs-funding" ? "WALLET NEEDS SOL"
           : miningMode === "loading" ? "INITIALISING…"
           : "NO WALLET";
         return (
@@ -543,6 +561,14 @@ export default function App() {
             {miningMode === "self-fund-ready" && isBurner && sharedAvailable && (
               <span className="wallet-address" style={{ color: "var(--grey)" }} title="If your burner runs low, the shared relayer can top it up">
                 · shared relayer available (fallback)
+              </span>
+            )}
+            {miningMode === "external-needs-funding" && (
+              <span className="wallet-address">
+                {activeSolBalance !== null ? `${(activeSolBalance / 1e9).toFixed(4)} SOL` : "…"}
+                {" · "}
+                fund your wallet (faucet.solana.com) or pick a relayer route
+                {sharedAvailable && <> · or pick <b>SHARED</b></>}
               </span>
             )}
           </div>

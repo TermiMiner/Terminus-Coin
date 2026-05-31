@@ -119,6 +119,27 @@ export default function App() {
     const id = setInterval(probe, 30_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [activeWallet.publicKey?.toBase58()]);
+
+  // Auto-nudge the tip to the bootstrap relayer's minimum when the user
+  // explicitly picks SHARED. Without this, picking SHARED with the default
+  // tip=0 routes through the relayer and gets rejected by the tip-floor on
+  // every repeat claim. AUTO is a transient routing — when AUTO chooses
+  // SHARED for a fresh burner, the first-claim subsidy covers it and
+  // subsequent claims self-fund post-topup, so no bump is needed there.
+  // claimTip deliberately omitted from deps: prevents the effect from
+  // re-firing if the user lowers the tip below the minimum manually.
+  useEffect(() => {
+    if (
+      modePreference === "shared" &&
+      shared?.minTipTerm !== undefined &&
+      shared.minTipTerm > 0 &&
+      claimTip < shared.minTipTerm
+    ) {
+      setClaimTip(shared.minTipTerm);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modePreference, shared?.minTipTerm]);
+
   const isBurner = !phantom.publicKey && !!burner.publicKey;
 
   // Live SOL balances for active wallet, burner, local relayer (polled every 5s)

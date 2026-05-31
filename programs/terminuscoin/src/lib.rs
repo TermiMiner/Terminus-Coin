@@ -1168,7 +1168,11 @@ pub struct Claim<'info> {
     #[account(mut, seeds = [b"mint"], bump)]
     pub mint: Account<'info, Mint>,
 
-    #[account(mut, token::mint = mint)]
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = authority,
+    )]
     pub user_token_account: Account<'info, TokenAccount>,
 
     /// Relayer's TERM ATA — receives `relayer_tip_term` paid by the miner.
@@ -1249,7 +1253,10 @@ pub struct Stake<'info> {
     )]
     pub stake_vault: Account<'info, TokenAccount>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        token::authority = authority,
+    )]
     pub user_token_account: Account<'info, TokenAccount>,
 
     #[account(mut)]
@@ -1309,7 +1316,11 @@ pub struct ClaimYield<'info> {
     #[account(mut, seeds = [b"mint"], bump)]
     pub mint: Account<'info, Mint>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = authority,
+    )]
     pub user_token_account: Account<'info, TokenAccount>,
 
     /// CHECK: PDA mint authority
@@ -1333,7 +1344,11 @@ pub struct ClaimTeamVest<'info> {
     #[account(mut, seeds = [b"mint"], bump)]
     pub mint: Account<'info, Mint>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        token::mint = mint,
+        token::authority = team_wallet,
+    )]
     pub team_token_account: Account<'info, TokenAccount>,
 
     /// CHECK: PDA mint authority
@@ -1428,7 +1443,10 @@ pub struct DepositBondTerm<'info> {
     )]
     pub bond_term_vault: Account<'info, TokenAccount>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        token::authority = authority,
+    )]
     pub user_token_account: Account<'info, TokenAccount>,
 
     /// The miner — signs to transfer TERM from user_token_account into the

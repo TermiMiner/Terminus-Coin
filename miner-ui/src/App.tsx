@@ -123,26 +123,6 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [activeWallet.publicKey?.toBase58()]);
 
-  // Auto-nudge the tip to the bootstrap relayer's minimum when the user
-  // explicitly picks SHARED. Without this, picking SHARED with the default
-  // tip=0 routes through the relayer and gets rejected by the tip-floor on
-  // every repeat claim. AUTO is a transient routing — when AUTO chooses
-  // SHARED for a fresh burner, the first-claim subsidy covers it and
-  // subsequent claims self-fund post-topup, so no bump is needed there.
-  // claimTip deliberately omitted from deps: prevents the effect from
-  // re-firing if the user lowers the tip below the minimum manually.
-  useEffect(() => {
-    if (
-      modePreference === "shared" &&
-      shared?.minTipTerm !== undefined &&
-      shared.minTipTerm > 0 &&
-      claimTip < shared.minTipTerm
-    ) {
-      setClaimTip(shared.minTipTerm);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modePreference, shared?.minTipTerm]);
-
   const isBurner = !phantom.publicKey && !!burner.publicKey;
 
   // Live SOL balances for active wallet, burner, local relayer (polled every 5s)
@@ -224,6 +204,29 @@ export default function App() {
   // Backwards-compat shims used in the burner-warning text below.
   const sharedActive = miningMode === "shared";
   const localActive  = miningMode === "local";
+
+  // Auto-nudge the tip to the bootstrap relayer's minimum whenever the
+  // effective mining mode is SHARED with bootstrap-mode enforcement on.
+  // Gating on miningMode (not modePreference) catches both explicit-SHARED
+  // and AUTO-resolves-to-SHARED, so a 0-SOL burner in AUTO mode doesn't
+  // silently sit at tip=0 and get rejected on every repeat claim.
+  // Declared after miningMode is computed so the dep is in scope.
+  // claimTip deliberately omitted from deps: prevents the effect from
+  // re-firing if the user lowers the tip below the minimum manually
+  // (rare with OFF now hidden under SHARED+bootstrap, but possible if
+  // bootstrap toggles off and back on).
+  useEffect(() => {
+    if (
+      miningMode === "shared" &&
+      shared?.bootstrapMode &&
+      shared.minTipTerm !== undefined &&
+      shared.minTipTerm > 0 &&
+      claimTip < shared.minTipTerm
+    ) {
+      setClaimTip(shared.minTipTerm);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [miningMode, shared?.bootstrapMode, shared?.minTipTerm]);
 
   // Tip is only meaningful when a relayer is active. In self-fund mode, the
   // "tip" would be a no-op self-transfer (miner ATA → miner ATA) that just
@@ -652,12 +655,22 @@ export default function App() {
               min {(shared.minTipTerm / 1_000_000).toFixed(2)} TERM
             </span>
           )}
+          {/* OFF is hidden under SHARED + bootstrap mode because the relayer
+              enforces a tip floor — picking OFF after the first claim would
+              cause every subsequent claim to be rejected. LOCAL mode keeps
+              OFF visible (your own relayer; no floor). When bootstrap mode
+              ends and the floor lifts, OFF returns automatically. */}
           {[
             { raw: 0,         label: "off" },
             { raw: 500_000,   label: "0.5" },
             { raw: 1_000_000, label: "1" },
             { raw: 2_000_000, label: "2" },
-          ].map(({ raw, label }) => (
+          ]
+          .filter(({ raw }) =>
+            raw > 0 ||
+            !(miningMode === "shared" && shared?.bootstrapMode && shared.minTipTerm && shared.minTipTerm > 0)
+          )
+          .map(({ raw, label }) => (
             <button
               key={raw}
               className={`btn ${claimTip === raw ? "active" : ""}`}

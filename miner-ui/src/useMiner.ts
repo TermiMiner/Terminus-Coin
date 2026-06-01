@@ -330,12 +330,17 @@ export function useMiner(
         }
 
         if (shouldRestartRef.current) {
+          // Re-enter through startRef so the next round picks up the latest
+          // closure (broadcaster, relayerTipTerm). Calling mine() directly
+          // would re-use the closure captured when the user clicked Start,
+          // so mid-session tip/mode changes would silently not apply until
+          // a Stop + Start cycle.
           if (backoffMs > 0) {
             appendLog("dim", `[${ts()}] Backing off ${Math.round(backoffMs / 1000)}s before next round…`);
-            setTimeout(() => { if (shouldRestartRef.current) mine(); }, backoffMs);
+            setTimeout(() => { if (shouldRestartRef.current) startRef.current(); }, backoffMs);
           } else {
             appendLog("dim", `[${ts()}] Restarting…`);
-            mine();
+            startRef.current();
           }
         } else {
           setStatus("idle");

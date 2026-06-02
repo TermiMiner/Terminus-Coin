@@ -58,28 +58,30 @@ export interface SharedRelayerInfo {
  * Pass `walletPubkey` to include this wallet's remaining topup quota.
  */
 export async function fetchSharedRelayerInfo(walletPubkey?: PublicKey): Promise<SharedRelayerInfo | null> {
-  try {
-    const url = walletPubkey
-      ? `/api/relayer-info?wallet=${walletPubkey.toBase58()}`
-      : `/api/relayer-info`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data?.pubkey) return null;
-    return {
-      pubkey: new PublicKey(data.pubkey),
-      balance: data.balance ?? 0,
-      dailyCap: data.dailyCap,
-      dailySpent: data.dailySpent,
-      dailyRemaining: data.dailyRemaining,
-      wallet: data.wallet,
-      bootstrapMode: data.bootstrapMode,
-      minTipTerm: data.minTipTerm,
-      deprecation: data.deprecation,
-    };
-  } catch {
-    return null;
-  }
+  const url = walletPubkey
+    ? `/api/relayer-info?wallet=${walletPubkey.toBase58()}`
+    : `/api/relayer-info`;
+  // NB: network errors and non-2xx responses (including the API's own 500 when
+  // RELAYER_SECRET_KEY is unset or the RPC is down) propagate as throws. The
+  // caller treats a throw as "relayer availability unknown" and keeps retrying,
+  // rather than as a definitive "no relayer" — which would wrongly route a
+  // SOL-less burner to a self-fund topup it cannot perform. Only a clean 200
+  // with no pubkey signals "relayer genuinely not configured" → null.
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`relayer-info HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data?.pubkey) return null;
+  return {
+    pubkey: new PublicKey(data.pubkey),
+    balance: data.balance ?? 0,
+    dailyCap: data.dailyCap,
+    dailySpent: data.dailySpent,
+    dailyRemaining: data.dailyRemaining,
+    wallet: data.wallet,
+    bootstrapMode: data.bootstrapMode,
+    minTipTerm: data.minTipTerm,
+    deprecation: data.deprecation,
+  };
 }
 
 export function sharedRelayerAdapter(pubkey: PublicKey): BroadcastAdapter {

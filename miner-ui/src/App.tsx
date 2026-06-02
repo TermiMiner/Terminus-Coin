@@ -112,11 +112,19 @@ export default function App() {
   // Probe the deployment for a configured shared relayer (also re-fetches
   // when activeWallet changes so per-wallet quota info reflects the right key).
   const [shared, setShared] = useState<SharedRelayerInfo | null>(null);
+  // True once a probe has SUCCEEDED (relayer presence is known: either
+  // configured, or cleanly absent). Stays false while probes are failing, so a
+  // SOL-less burner waits in `loading` and retries rather than being pushed to a
+  // topup it can't perform. Set-once: not reset on wallet switch (the relayer is
+  // deployment-wide; only the per-wallet quota differs).
+  const [sharedProbed, setSharedProbed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     const probe = () => {
       fetchSharedRelayerInfo(activeWallet.publicKey ?? undefined)
-        .then((info) => { if (!cancelled) setShared(info); });
+        .then((info) => { if (!cancelled) { setShared(info); setSharedProbed(true); } })
+        .catch(() => { /* transient API failure — keep last-known `shared`, leave
+                          sharedProbed unchanged; the 30s interval retries */ });
     };
     probe();
     const id = setInterval(probe, 30_000);
@@ -187,6 +195,11 @@ export default function App() {
   else if (modePreference === "self-fund" && isBurner) miningMode = "self-fund-needs-topup";
   else if (modePreference === "self-fund" && externalWalletNeedsFunding) miningMode = "external-needs-funding";
   // Auto fallthrough: self-fund preferred when wallet has SOL, else relayer.
+  // A burner that can't self-fund and whose shared-relayer availability isn't
+  // known yet waits for the probe (else it shows "needs topup" instead of
+  // defaulting to SHARED — and on a slow/failed probe would be stuck there).
+  // Explicit self-fund is handled above, so it isn't held up by this.
+  else if (isBurner && !burnerSolReady && !sharedProbed) miningMode = "loading";
   else if (burnerSolReady || externalWalletSelfFundable) miningMode = "self-fund-ready";
   else if (sharedAvailable) miningMode = "shared";
   else if (localAvailable) miningMode = "local";

@@ -43,7 +43,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
     const raw = process.env.RELAYER_SECRET_KEY;
-    if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
+    if (!raw) {
+      // No relayer configured on this deployment. Return a DEFINITIVE 200
+      // "not configured" — distinct from a transient 500 outage below — so the
+      // client treats it as a clean absence (route burners to self-fund) rather
+      // than retrying forever in INITIALISING…. fetchSharedRelayerInfo maps a
+      // 200 with no pubkey to null.
+      return res.status(200).json({ configured: false });
+    }
     const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
     const conn = new Connection(rpc, "confirmed");
     const balance = await conn.getBalance(relayer.publicKey);

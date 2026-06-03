@@ -219,6 +219,20 @@ export default function App() {
   const sharedActive = miningMode === "shared";
   const localActive  = miningMode === "local";
 
+  // Relayer-tip bounds (see tipMath) — computed once at component scope so the
+  // Start gate and the tip selector share one source of truth. ceil falls back
+  // to the protocol cap until chain state loads.
+  const tipFloor = shared?.minTipTerm ?? 0;
+  const tipCeil = chain
+    ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
+    : Number(MAX_TIP_TERM);
+  const { choices: tipChoices, floorInfeasible: tipFloorInfeasible } = deriveTipChoices(tipFloor, tipCeil);
+  // Block Start when routing through a shared relayer whose floor exceeds the
+  // base-block net reward: those claims fail on-chain (tip<=net_reward) on every
+  // ordinary block (≥50% of blocks), wasting PoW + the relayer's broadcast fee.
+  // Gate and prompt a route switch instead. self-fund/local don't pay this tip.
+  const tipFloorBlocksStart = miningMode === "shared" && tipFloorInfeasible;
+
   // Auto-nudge the tip up to the active relayer's advertised floor whenever the
   // effective mining mode is SHARED and that relayer advertises a minTipTerm.
   // Gated on the floor itself (not bootstrapMode) so it stays correct once the
@@ -293,7 +307,8 @@ export default function App() {
   const canMine = !!activeWallet.publicKey && !!chain && !chain.paused
     && miningMode !== "loading" && miningMode !== "no-wallet"
     && miningMode !== "self-fund-needs-topup"
-    && miningMode !== "external-needs-funding";
+    && miningMode !== "external-needs-funding"
+    && !tipFloorBlocksStart;
 
   function handleGenerateBurner() {
     burner.generate();
@@ -656,54 +671,44 @@ export default function App() {
           active relayer's advertised floor and clamped to what a base-block
           claim can actually pay — min(MAX_TIP_TERM, minNetReward) — since the
           program enforces tip <= net_reward. See tipMath.ts. */}
-      {(miningMode === "shared" || miningMode === "local") && (() => {
-        // Relayer's advertised floor (0 = none, e.g. LOCAL).
-        const floor = shared?.minTipTerm ?? 0;
-        // Net-reward ceiling. Until chain state loads, fall back to the protocol
-        // cap so presets aren't over-restricted; re-clamps once launchTime +
-        // difficulty are known and the live emission epoch can be computed.
-        const nowSec = BigInt(Math.floor(Date.now() / 1000));
-        const ceil = chain
-          ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, nowSec)))
-          : Number(MAX_TIP_TERM);
-        const { choices, floorInfeasible } = deriveTipChoices(floor, ceil);
-        const presetRaws = choices.map((c) => c.raw);
-        return (
-          <div className="wallet-bar">
-            <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
-              CLAIM TIP:
+      {(miningMode === "shared" || miningMode === "local") && (
+        <div className="wallet-bar">
+          <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
+            CLAIM TIP:
+          </span>
+          {tipFloor > 0 && (
+            <span className="wallet-address" style={{ color: "#ff9933" }} title="The relayer requires at least this tip per repeat claim. First-ever claims are subsidized under bootstrap.">
+              min {(tipFloor / 1_000_000).toFixed(2)} TERM
             </span>
-            {floor > 0 && (
-              <span className="wallet-address" style={{ color: "#ff9933" }} title="The relayer requires at least this tip per repeat claim. First-ever claims are subsidized under bootstrap.">
-                min {(floor / 1_000_000).toFixed(2)} TERM
-              </span>
-            )}
-            {/* Presets derived in tipMath.deriveTipChoices: OFF only when the
-                relayer has no floor; rungs clamped to the net-reward ceiling. */}
-            {choices.map(({ raw, label }) => (
-              <button
-                key={raw}
-                className={`btn ${claimTip === raw ? "active" : ""}`}
-                onClick={() => setClaimTip(raw)}
-                title={raw === 0 ? "Self-fund: relayer absorbs SOL costs" : `Tip ${label} TERM per claim`}
-              >
-                [ {label === "off" ? "OFF" : `${label} TERM`} ]
-              </button>
-            ))}
-            {/* Custom tip outside the derived presets */}
-            {claimTip > 0 && !presetRaws.includes(claimTip) && (
-              <span className="wallet-address" style={{ color: "#00ff99" }}>
-                · custom: {(claimTip / 1_000_000).toFixed(3)} TERM
-              </span>
-            )}
-            {floorInfeasible && (
-              <span className="wallet-address" style={{ color: "#ff9933" }} title="This relayer's floor exceeds the current base-block net reward, so an ordinary claim would hit the on-chain tip<=net_reward rule. It clears only on lucky (bonus) blocks where the reward is higher.">
-                ⚠ floor &gt; base-block reward — clears only on bonus blocks
-              </span>
-            )}
-          </div>
-        );
-      })()}
+          )}
+          {/* Presets derived in tipMath.deriveTipChoices: OFF only when the
+              relayer has no floor; rungs clamped to the net-reward ceiling. */}
+          {tipChoices.map(({ raw, label }) => (
+            <button
+              key={raw}
+              className={`btn ${claimTip === raw ? "active" : ""}`}
+              onClick={() => setClaimTip(raw)}
+              title={raw === 0 ? "Self-fund: relayer absorbs SOL costs" : `Tip ${label} TERM per claim`}
+            >
+              [ {label === "off" ? "OFF" : `${label} TERM`} ]
+            </button>
+          ))}
+          {/* Custom tip outside the derived presets */}
+          {claimTip > 0 && !tipChoices.some((c) => c.raw === claimTip) && (
+            <span className="wallet-address" style={{ color: "#00ff99" }}>
+              · custom: {(claimTip / 1_000_000).toFixed(3)} TERM
+            </span>
+          )}
+          {/* Infeasible floor: floor > base-block net reward. Start is blocked
+              (canMine → tipFloorBlocksStart) because every ordinary block would
+              fail tip<=net_reward on-chain; prompt a route switch instead. */}
+          {tipFloorInfeasible && (
+            <span className="wallet-address" style={{ color: "#ff5555" }} title="This relayer's floor exceeds the current base-block net reward, so an ordinary claim would fail the on-chain tip<=net_reward rule on ≥50% of blocks. Mining through this relayer is paused — switch to self-fund (or another relayer when available).">
+              ⚠ floor &gt; base-block reward — mining paused, switch routes
+            </span>
+          )}
+        </div>
+      )}
 
       {(isBurner || relayer.publicKey) && (
         <div className="burner-warning">

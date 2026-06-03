@@ -10,7 +10,9 @@ const MAX_DAILY_LAMPORTS    = parseInt(process.env.MAX_DAILY_LAMPORTS    ?? "100
 // a relayed claim to learn the relayer is sunsetting.
 const BOOTSTRAP_SUNSET_DATE   = process.env.BOOTSTRAP_SUNSET_DATE ?? "";
 const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
-const MIN_BOOTSTRAP_TIP_TERM  = parseInt(process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000");
+// Relayer's permanent cost-recovery floor. Read independent of BOOTSTRAP_MODE
+// so it survives the launch phase; falls back to the legacy env name.
+const MIN_TIP_TERM            = parseInt(process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000");
 const BOOTSTRAP_MODE          = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
 
 function deprecationInfo() {
@@ -89,12 +91,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       out.kvEnabled = false;
     }
 
-    // Bootstrap-mode metadata: minimum tip enforced + deprecation status.
-    // Both surfaced so the UI can render the tip floor and the sunset banner.
-    if (BOOTSTRAP_MODE) {
-      out.bootstrapMode = true;
-      out.minTipTerm = MIN_BOOTSTRAP_TIP_TERM;
-    }
+    // Permanent relayer floor — advertised regardless of bootstrap so the UI
+    // can derive tip presets and the floor stays enforced after the launch phase.
+    if (MIN_TIP_TERM > 0) out.minTipTerm = MIN_TIP_TERM;
+    // Bootstrap governs only the temporary first-claim subsidy + sunset banner.
+    if (BOOTSTRAP_MODE) out.bootstrapMode = true;
     const dep = deprecationInfo();
     if (dep) out.deprecation = dep;
 

@@ -30,6 +30,7 @@ export function deriveBondPDA(authority: PublicKey): PublicKey {
 
 export interface ChainState {
   difficulty: bigint;          // u64 from chain — values can exceed 2^53
+  launchTime: bigint;          // i64 unix seconds — emission epoch anchor
   totalClaims: number;
   totalMinted: bigint;
   lastHash: number[];
@@ -80,6 +81,7 @@ export function useChainState(connection: Connection | null): ChainStateResult {
         if (!cancelled) {
           setState({
             difficulty: BigInt(gs.difficulty.toString()),
+            launchTime: BigInt(gs.launchTime.toString()),
             totalClaims: Number(gs.totalClaims),
             totalMinted: BigInt(gs.totalMinted.toString()),
             lastHash: gs.lastHash as number[],

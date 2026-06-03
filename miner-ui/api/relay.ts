@@ -43,7 +43,10 @@ const MAX_DAILY_LAMPORTS        = parseInt(process.env.MAX_DAILY_LAMPORTS       
 // devnet behavior, preserved so this code can ship without flipping the
 // operational policy.
 const BOOTSTRAP_MODE         = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
-const MIN_BOOTSTRAP_TIP_TERM = parseInt(process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000"); // 0.5 TERM
+// Relayer's permanent cost-recovery floor — enforced on repeat claims
+// regardless of BOOTSTRAP_MODE (which now governs only the first-claim subsidy
+// + sunset). Falls back to the legacy env name for back-compat.
+const MIN_TIP_TERM = parseInt(process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000"); // 0.5 TERM
 const BOOTSTRAP_SUNSET_DATE  = process.env.BOOTSTRAP_SUNSET_DATE ?? ""; // ISO 8601, e.g. "2026-09-15T00:00:00Z"
 const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
 
@@ -195,44 +198,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
     const conn = new Connection(rpc, "confirmed");
 
-    // ── Bootstrap-mode policy ──────────────────────────────────────────
-    // Only enforced when BOOTSTRAP_MODE=true, and only on claim txs.
-    // Non-claim relayed txs (e.g. withdraw_bond — the end-of-mining rent
-    // refund) pass through with no bootstrap-mode policy, because they
-    // don't produce TERM the relayer could be tipped from. Rules for
-    // claim txs:
-    //   - Repeat claims (wallet has existing UserState) MUST tip at least
-    //     MIN_BOOTSTRAP_TIP_TERM, or relayer rejects.
-    //   - First claims (fresh wallet, no UserState yet) are subsidized:
-    //     tip can be 0. Subsidy continues even after sunset.
-    //   - After sunset date: paid relays return 410 Gone. Only first-claim
-    //     subsidies continue (manual contingency).
+    // ── Tip-floor + bootstrap policy ───────────────────────────────────
+    // The tip floor (MIN_TIP_TERM) is a PERMANENT relayer cost-recovery rule,
+    // enforced on every repeat claim — independent of BOOTSTRAP_MODE, so it
+    // survives the launch phase. BOOTSTRAP_MODE governs only the temporary
+    // subsidies. Non-claim relayed txs (e.g. withdraw_bond — the end-of-mining
+    // rent refund) decode to null and pass through; they produce no TERM to tip
+    // from. Rules for claim txs:
+    //   - Repeat claims MUST tip at least MIN_TIP_TERM, or the relayer rejects.
+    //   - First claims (fresh wallet, no UserState yet) are subsidized ONLY
+    //     under bootstrap: tip can be 0. Outside bootstrap they pay the floor.
+    //   - Under bootstrap after sunset: paid relays return 410 Gone; only
+    //     first-claim subsidies continue (manual contingency).
     //
     // Known bounded DoS surface: a repeat-claim attacker could attach a
     // deposit_bond ix to their claim tx — if it fails on-chain (bond PDA
-    // already in use), the relayer eats the tx fee (~5K lamports). Bounded
-    // by MAX_RELAYS_PER_IP_PER_HR × ~5K ≈ 600K lamports/hr/IP.
+    // already in use), the relayer eats the tx fee (~5K lamports). Bounded by
+    // MAX_RELAYS_PER_IP_PER_HR × ~5K ≈ 600K lamports/hr/IP.
     const deprecation = deprecationInfo();
-    if (BOOTSTRAP_MODE) {
+    {
       const claimInfo = decodeClaimIx(tx);
       if (claimInfo) {
         const { tip, authority } = claimInfo;
-        const firstClaim = await isFirstClaim(conn, authority);
+        // First-claim free ride exists only under bootstrap; otherwise every
+        // claim pays the floor. The ternary short-circuits the isFirstClaim RPC
+        // when bootstrap is off.
+        const firstClaim = BOOTSTRAP_MODE ? await isFirstClaim(conn, authority) : false;
 
-        // Hard cutover after sunset: only first-claim subsidies allowed.
-        if (deprecation && deprecation.daysRemaining === 0 && !firstClaim) {
+        // Bootstrap sunset hard cutover: only first-claim subsidies continue.
+        if (BOOTSTRAP_MODE && deprecation && deprecation.daysRemaining === 0 && !firstClaim) {
           return res.status(410).json({
             error: deprecation.message,
             deprecation,
           });
         }
 
-        // Tip floor — repeat claims must tip enough to cover relayer SOL costs.
-        if (!firstClaim && tip < BigInt(MIN_BOOTSTRAP_TIP_TERM)) {
+        // Tip floor — non-subsidized claims must cover the relayer's SOL costs.
+        if (!firstClaim && MIN_TIP_TERM > 0 && tip < BigInt(MIN_TIP_TERM)) {
           return res.status(429).json({
-            error: `Tip below relayer minimum (${(MIN_BOOTSTRAP_TIP_TERM / 1_000_000).toFixed(2)} TERM). Raise your tip in settings or switch to self-fund.`,
+            error: `Tip below relayer minimum (${(MIN_TIP_TERM / 1_000_000).toFixed(2)} TERM). Raise your tip in settings or switch to self-fund.`,
             quota: "tip-floor",
-            minTip: MIN_BOOTSTRAP_TIP_TERM,
+            minTip: MIN_TIP_TERM,
             providedTip: Number(tip),
           });
         }

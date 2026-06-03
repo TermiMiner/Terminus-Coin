@@ -3,6 +3,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { useChainState, SUPPLY_CAP } from "./useChainState";
 import { useMiner } from "./useMiner";
+import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
 import {
   BrowserKeypairWallet,
   BURNER_STORAGE_KEY,
@@ -218,28 +219,25 @@ export default function App() {
   const sharedActive = miningMode === "shared";
   const localActive  = miningMode === "local";
 
-  // Auto-nudge the tip to the bootstrap relayer's minimum whenever the
-  // effective mining mode is SHARED with bootstrap-mode enforcement on.
-  // Gating on miningMode (not modePreference) catches both explicit-SHARED
-  // and AUTO-resolves-to-SHARED, so a 0-SOL burner in AUTO mode doesn't
-  // silently sit at tip=0 and get rejected on every repeat claim.
-  // Declared after miningMode is computed so the dep is in scope.
-  // claimTip deliberately omitted from deps: prevents the effect from
-  // re-firing if the user lowers the tip below the minimum manually
-  // (rare with OFF now hidden under SHARED+bootstrap, but possible if
-  // bootstrap toggles off and back on).
+  // Auto-nudge the tip up to the active relayer's advertised floor whenever the
+  // effective mining mode is SHARED and that relayer advertises a minTipTerm.
+  // Gated on the floor itself (not bootstrapMode) so it stays correct once the
+  // floor is decoupled from the launch phase. Gating on miningMode (not
+  // modePreference) catches both explicit-SHARED and AUTO-resolves-to-SHARED, so
+  // a 0-SOL burner in AUTO doesn't sit at tip=0 and get rejected on every repeat
+  // claim. claimTip deliberately omitted from deps: prevents the effect from
+  // re-firing if the user lowers the tip below the floor manually.
   useEffect(() => {
     if (
       miningMode === "shared" &&
-      shared?.bootstrapMode &&
-      shared.minTipTerm !== undefined &&
+      shared?.minTipTerm !== undefined &&
       shared.minTipTerm > 0 &&
       claimTip < shared.minTipTerm
     ) {
       setClaimTip(shared.minTipTerm);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [miningMode, shared?.bootstrapMode, shared?.minTipTerm]);
+  }, [miningMode, shared?.minTipTerm]);
 
   // Tip is only meaningful when a relayer is active. In self-fund mode, the
   // "tip" would be a no-op self-transfer (miner ATA → miner ATA) that just
@@ -653,54 +651,59 @@ export default function App() {
         </div>
       )}
 
-      {/* Claim tip — only meaningful when a relayer is active. Self-fund mode
-          hides this entirely (effectiveTip is forced to 0 anyway). Presets
-          are in TERM raw units (6 decimals); MAX_TIP_TERM = 5 TERM = 5_000_000
-          raw. Default 0 = no tip. When bootstrap mode is on, repeat claims
-          must tip at least minTipTerm. */}
-      {(miningMode === "shared" || miningMode === "local") && (
-        <div className="wallet-bar">
-          <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
-            CLAIM TIP:
-          </span>
-          {shared?.bootstrapMode && shared.minTipTerm !== undefined && shared.minTipTerm > 0 && (
-            <span className="wallet-address" style={{ color: "#ff9933" }} title="The shared relayer requires this minimum tip per claim. First-ever claims are subsidized.">
-              min {(shared.minTipTerm / 1_000_000).toFixed(2)} TERM
+      {/* Claim tip — only meaningful when a relayer is active (self-fund hides
+          this; effectiveTip is forced to 0 there). Presets are DERIVED from the
+          active relayer's advertised floor and clamped to what a base-block
+          claim can actually pay — min(MAX_TIP_TERM, minNetReward) — since the
+          program enforces tip <= net_reward. See tipMath.ts. */}
+      {(miningMode === "shared" || miningMode === "local") && (() => {
+        // Relayer's advertised floor (0 = none, e.g. LOCAL).
+        const floor = shared?.minTipTerm ?? 0;
+        // Net-reward ceiling. Until chain state loads, fall back to the protocol
+        // cap so presets aren't over-restricted; re-clamps once launchTime +
+        // difficulty are known and the live emission epoch can be computed.
+        const nowSec = BigInt(Math.floor(Date.now() / 1000));
+        const ceil = chain
+          ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, nowSec)))
+          : Number(MAX_TIP_TERM);
+        const { choices, floorInfeasible } = deriveTipChoices(floor, ceil);
+        const presetRaws = choices.map((c) => c.raw);
+        return (
+          <div className="wallet-bar">
+            <span className="wallet-address" title="Tip in TERM paid to the relayer out of each claim's reward. 0 = no tip (relayer covers its own costs).">
+              CLAIM TIP:
             </span>
-          )}
-          {/* OFF is hidden under SHARED + bootstrap mode because the relayer
-              enforces a tip floor — picking OFF after the first claim would
-              cause every subsequent claim to be rejected. LOCAL mode keeps
-              OFF visible (your own relayer; no floor). When bootstrap mode
-              ends and the floor lifts, OFF returns automatically. */}
-          {[
-            { raw: 0,         label: "off" },
-            { raw: 500_000,   label: "0.5" },
-            { raw: 1_000_000, label: "1" },
-            { raw: 2_000_000, label: "2" },
-          ]
-          .filter(({ raw }) =>
-            raw > 0 ||
-            !(miningMode === "shared" && shared?.bootstrapMode && shared.minTipTerm && shared.minTipTerm > 0)
-          )
-          .map(({ raw, label }) => (
-            <button
-              key={raw}
-              className={`btn ${claimTip === raw ? "active" : ""}`}
-              onClick={() => setClaimTip(raw)}
-              title={raw === 0 ? "Self-fund: relayer absorbs SOL costs" : `Tip ${label} TERM per claim`}
-            >
-              [ {label === "off" ? "OFF" : `${label} TERM`} ]
-            </button>
-          ))}
-          {/* Custom tip outside the presets — shows when value is non-zero and not a preset */}
-          {claimTip > 0 && ![500_000, 1_000_000, 2_000_000].includes(claimTip) && (
-            <span className="wallet-address" style={{ color: "#00ff99" }}>
-              · custom: {(claimTip / 1_000_000).toFixed(3)} TERM
-            </span>
-          )}
-        </div>
-      )}
+            {floor > 0 && (
+              <span className="wallet-address" style={{ color: "#ff9933" }} title="The relayer requires at least this tip per repeat claim. First-ever claims are subsidized under bootstrap.">
+                min {(floor / 1_000_000).toFixed(2)} TERM
+              </span>
+            )}
+            {/* Presets derived in tipMath.deriveTipChoices: OFF only when the
+                relayer has no floor; rungs clamped to the net-reward ceiling. */}
+            {choices.map(({ raw, label }) => (
+              <button
+                key={raw}
+                className={`btn ${claimTip === raw ? "active" : ""}`}
+                onClick={() => setClaimTip(raw)}
+                title={raw === 0 ? "Self-fund: relayer absorbs SOL costs" : `Tip ${label} TERM per claim`}
+              >
+                [ {label === "off" ? "OFF" : `${label} TERM`} ]
+              </button>
+            ))}
+            {/* Custom tip outside the derived presets */}
+            {claimTip > 0 && !presetRaws.includes(claimTip) && (
+              <span className="wallet-address" style={{ color: "#00ff99" }}>
+                · custom: {(claimTip / 1_000_000).toFixed(3)} TERM
+              </span>
+            )}
+            {floorInfeasible && (
+              <span className="wallet-address" style={{ color: "#ff9933" }} title="This relayer's floor exceeds the current base-block net reward, so an ordinary claim would hit the on-chain tip<=net_reward rule. It clears only on lucky (bonus) blocks where the reward is higher.">
+                ⚠ floor &gt; base-block reward — clears only on bonus blocks
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {(isBurner || relayer.publicKey) && (
         <div className="burner-warning">

@@ -340,6 +340,36 @@ export default function App() {
     && miningMode !== "external-needs-funding"
     && !tipFloorBlocksStart;
 
+  // ── One-click start (new-user onboarding) ────────────────────────────────
+  // With no wallet connected, pressing Start generates a burner and — once its
+  // mode resolves to a mineable state — begins mining on AUTO (the default), so a
+  // brand-new crypto user needs zero config. Passive visitors get no wallet until
+  // they ask. A fresh 0-SOL burner routes through the relayer automatically.
+  const [autoStartPending, setAutoStartPending] = useState(false);
+  const canOneClick = !activeWallet.publicKey && !!chain && !chain.paused;
+  const handleStartClick = () => {
+    if (!activeWallet.publicKey) {
+      handleGenerateBurner();
+      setAutoStartPending(true);
+    } else {
+      start();
+    }
+  };
+  useEffect(() => {
+    if (!autoStartPending) return;
+    if (mining) { setAutoStartPending(false); return; }
+    if (canMine) { setAutoStartPending(false); start(); return; }
+    // Settled into a state needing user action → stop waiting; the burner now
+    // exists, so the normal UI takes over (topup prompt, route switch, etc.).
+    if (miningMode === "self-fund-needs-topup"
+      || miningMode === "external-needs-funding"
+      || tipFloorBlocksStart) {
+      setAutoStartPending(false);
+    }
+    // else miningMode === "loading" → keep waiting for the probe + balance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStartPending, canMine, mining, miningMode, tipFloorBlocksStart]);
+
   function handleGenerateBurner() {
     burner.generate();
     refreshWallets();
@@ -835,8 +865,13 @@ export default function App() {
       {/* Controls — hoisted above stats so the primary action isn't buried */}
       <div className="controls">
         {!mining ? (
-          <button className="btn primary-action" disabled={!canMine} onClick={start}>
-            [ START MINING ]
+          <button
+            className="btn primary-action"
+            disabled={(!canMine && !canOneClick) || autoStartPending}
+            onClick={handleStartClick}
+            title={canOneClick ? "Generates a burner wallet and starts mining on AUTO — no setup needed" : undefined}
+          >
+            [ {autoStartPending ? "STARTING…" : "START MINING"} ]
           </button>
         ) : (
           <button className="btn primary-action active" onClick={stop}>

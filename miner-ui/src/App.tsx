@@ -63,6 +63,17 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("terminus.stats_collapsed", statsCollapsed ? "1" : "0");
   }, [statsCollapsed]);
+  // Routing config (ROUTE / RELAYERS / MODE / tip) collapse — same pattern, own
+  // key so it minimizes independently. Default collapsed on mobile so the relayer
+  // + tip controls don't dominate small screens.
+  const [configCollapsed, setConfigCollapsed] = useState<boolean>(() => {
+    const stored = localStorage.getItem("terminus.config_collapsed");
+    if (stored !== null) return stored === "1";
+    return typeof window !== "undefined" && window.innerWidth <= 600;
+  });
+  useEffect(() => {
+    localStorage.setItem("terminus.config_collapsed", configCollapsed ? "1" : "0");
+  }, [configCollapsed]);
 
   // Relayer tip (raw TERM units, 6 decimals). 0 = no tip. Capped by
   // on-chain MAX_TIP_TERM = 5_000_000 (5 TERM). Default 0 preserves the
@@ -574,6 +585,58 @@ export default function App() {
         </div>
       )}
 
+      {/* Primary action — hoisted to the top, above the routing config + tabs,
+          so the main CTA isn't buried. Persists across tabs. */}
+      <div className="controls">
+        {!mining ? (
+          <button
+            className="btn primary-action"
+            disabled={(!canMine && !canOneClick) || autoStartPending}
+            onClick={handleStartClick}
+            title={canOneClick ? "Generates a burner wallet and starts mining on AUTO — no setup needed" : undefined}
+          >
+            [ {autoStartPending ? "STARTING…" : "START MINING"} ]
+          </button>
+        ) : (
+          <button className="btn primary-action active" onClick={stop}>
+            [ STOP ]
+          </button>
+        )}
+
+        <span className={`status-pill ${status === "idle" ? "idle" : status === "error" ? "error" : "mining"}`}>
+          {tabHidden && mining ? "TAB PAUSED" : status.toUpperCase()}
+        </span>
+
+        {chain?.paused && (
+          <span className="status-pill error">PROGRAM PAUSED</span>
+        )}
+      </div>
+
+      {/* Routing config (ROUTE / RELAYERS / MODE / tip) — collapsible so it
+          doesn't crowd the CTA or small screens; default collapsed on mobile. */}
+      {activeWallet.publicKey && (
+      <div className="stats-section">
+        <button
+          className="stats-header"
+          onClick={() => setConfigCollapsed((v) => !v)}
+          aria-expanded={!configCollapsed}
+        >
+          <span>ROUTING {configCollapsed ? "▸" : "▾"}</span>
+          {configCollapsed && (
+            <span className="stats-summary">
+              {miningMode === "shared" ? `via ${selectedRelayer?.desc.name ?? "relayer"}`
+                : miningMode === "local" ? "via local relayer"
+                : miningMode === "self-fund-ready" ? "self-fund"
+                : miningMode === "self-fund-needs-topup" ? "needs topup"
+                : miningMode === "external-needs-funding" ? "wallet needs SOL"
+                : miningMode === "loading" ? "resolving…" : "—"}
+              {(miningMode === "shared" || miningMode === "local") && claimTip > 0
+                && ` · tip ${(claimTip / 1e6).toFixed(2)} TERM`}
+            </span>
+          )}
+        </button>
+        {!configCollapsed && (<>
+
       {/* Mode preference selector — user override for routing. AUTO defers
           to the self-fund-preferred decision tree; explicit choices pin the
           routing if achievable, otherwise silently fall back to auto. */}
@@ -853,6 +916,9 @@ export default function App() {
           )}
         </div>
       )}
+        </>)}
+      </div>
+      )}
 
       {/* Tab strip */}
       <div className="tab-strip">
@@ -861,32 +927,6 @@ export default function App() {
       </div>
 
       {tab === "mine" && (<>
-
-      {/* Controls — hoisted above stats so the primary action isn't buried */}
-      <div className="controls">
-        {!mining ? (
-          <button
-            className="btn primary-action"
-            disabled={(!canMine && !canOneClick) || autoStartPending}
-            onClick={handleStartClick}
-            title={canOneClick ? "Generates a burner wallet and starts mining on AUTO — no setup needed" : undefined}
-          >
-            [ {autoStartPending ? "STARTING…" : "START MINING"} ]
-          </button>
-        ) : (
-          <button className="btn primary-action active" onClick={stop}>
-            [ STOP ]
-          </button>
-        )}
-
-        <span className={`status-pill ${status === "idle" ? "idle" : status === "error" ? "error" : "mining"}`}>
-          {tabHidden && mining ? "TAB PAUSED" : status.toUpperCase()}
-        </span>
-
-        {chain?.paused && (
-          <span className="status-pill error">PROGRAM PAUSED</span>
-        )}
-      </div>
 
       {/* Chain stats — collapsible */}
       <div className="stats-section">

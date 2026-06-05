@@ -4,6 +4,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { useChainState, SUPPLY_CAP } from "./useChainState";
 import { useMiner } from "./useMiner";
 import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
+import { loadRelayers, probeAll, selectCheapest, type RelayerStatus } from "./relayers";
 import {
   BrowserKeypairWallet,
   BURNER_STORAGE_KEY,
@@ -12,7 +13,6 @@ import {
 } from "./burnerWallet";
 import {
   type BroadcastAdapter,
-  fetchSharedRelayerInfo,
   localRelayerAdapter,
   sharedRelayerAdapter,
   sharedTopUp,
@@ -110,22 +110,22 @@ export default function App() {
     ? { publicKey: phantom.publicKey, signTransaction: phantom.signTransaction }
     : burner;
 
-  // Probe the deployment for a configured shared relayer (also re-fetches
-  // when activeWallet changes so per-wallet quota info reflects the right key).
-  const [shared, setShared] = useState<SharedRelayerInfo | null>(null);
-  // True once a probe has SUCCEEDED (relayer presence is known: either
-  // configured, or cleanly absent). Stays false while probes are failing, so a
-  // SOL-less burner waits in `loading` and retries rather than being pushed to a
-  // topup it can't perform. Set-once: not reset on wallet switch (the relayer is
-  // deployment-wide; only the per-wallet quota differs).
+  // Probe ALL known relayers (bundled + runtime list + customs) and AUTO-select
+  // the cheapest feasible one below. Re-probes on wallet change (per-wallet
+  // quota) and every 30s. See relayers.ts.
+  const [relayerStatuses, setRelayerStatuses] = useState<RelayerStatus[]>([]);
+  // True once a full probe cycle has SUCCEEDED (relayer landscape is known).
+  // Stays false while probing fails, so a SOL-less burner waits in `loading`
+  // rather than being pushed to a topup it can't perform.
   const [sharedProbed, setSharedProbed] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    const probe = () => {
-      fetchSharedRelayerInfo(activeWallet.publicKey ?? undefined)
-        .then((info) => { if (!cancelled) { setShared(info); setSharedProbed(true); } })
-        .catch(() => { /* transient API failure — keep last-known `shared`, leave
-                          sharedProbed unchanged; the 30s interval retries */ });
+    const probe = async () => {
+      try {
+        const descs = await loadRelayers();
+        const statuses = await probeAll(descs, activeWallet.publicKey ?? undefined);
+        if (!cancelled) { setRelayerStatuses(statuses); setSharedProbed(true); }
+      } catch { /* keep last statuses; the 30s interval retries */ }
     };
     probe();
     const id = setInterval(probe, 30_000);
@@ -152,6 +152,20 @@ export default function App() {
     const id = setInterval(poll, 5_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [connection, burner, relayer, walletVersion, activeWallet.publicKey?.toBase58()]);
+
+  // Net-reward ceiling for tips (min(MAX_TIP_TERM, base-block net); see tipMath)
+  // and the AUTO-selected relayer — cheapest FEASIBLE among all probed relayers.
+  // `shared` is just the selected relayer's info, so the mode machinery below is
+  // unchanged: with one relayer (the bundled same-origin one) this is byte-
+  // identical to the previous single-relayer behavior. `() => 0` makes selection
+  // deterministic (first in the cheapest tier — prefers the bundled relayer);
+  // randomized load-spreading + manual pinning come in step ③.
+  const tipCeil = chain
+    ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
+    : Number(MAX_TIP_TERM);
+  const selectedRelayer = selectCheapest(relayerStatuses, tipCeil, () => 0);
+  const shared: SharedRelayerInfo | null = selectedRelayer?.info ?? null;
+  const tipFloor = shared?.minTipTerm ?? 0;
 
   // Availability — relayers that are set up for this user. Used for topup
   // decisions (the start() wrapper uses these to choose how to fund a
@@ -211,7 +225,8 @@ export default function App() {
   // Broadcaster is derived from the mining mode. Self-fund modes don't use
   // a broadcaster (the wallet signs directly).
   const broadcaster: BroadcastAdapter | undefined =
-    miningMode === "shared" && shared ? sharedRelayerAdapter(shared.pubkey)
+    miningMode === "shared" && selectedRelayer?.info
+      ? sharedRelayerAdapter(selectedRelayer.info.pubkey, selectedRelayer.desc.baseUrl)
     : miningMode === "local" ? (localRelayerAdapter(relayer) ?? undefined)
     : undefined;
 
@@ -219,18 +234,13 @@ export default function App() {
   const sharedActive = miningMode === "shared";
   const localActive  = miningMode === "local";
 
-  // Relayer-tip bounds (see tipMath) — computed once at component scope so the
-  // Start gate and the tip selector share one source of truth. ceil falls back
-  // to the protocol cap until chain state loads.
-  const tipFloor = shared?.minTipTerm ?? 0;
-  const tipCeil = chain
-    ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
-    : Number(MAX_TIP_TERM);
+  // Tip preset ladder + Start gate, from the bounds computed above (tipFloor /
+  // tipCeil): OFF/floor/2×/4× clamped to the net-reward ceiling.
   const { choices: tipChoices, floorInfeasible: tipFloorInfeasible } = deriveTipChoices(tipFloor, tipCeil);
-  // Block Start when routing through a shared relayer whose floor exceeds the
-  // base-block net reward: those claims fail on-chain (tip<=net_reward) on every
-  // ordinary block (≥50% of blocks), wasting PoW + the relayer's broadcast fee.
-  // Gate and prompt a route switch instead. self-fund/local don't pay this tip.
+  // Block Start when an explicitly-routed relayer's floor exceeds the base-block
+  // net reward — those claims fail tip<=net_reward on ≥50% of blocks. AUTO never
+  // selects an infeasible relayer, so this is dormant until manual relayer
+  // pinning (step ③); prompt a route switch instead.
   const tipFloorBlocksStart = miningMode === "shared" && tipFloorInfeasible;
 
   // Auto-nudge the tip up to the active relayer's advertised floor whenever the
@@ -281,7 +291,7 @@ export default function App() {
     try {
       // Only reaches here in self-fund modes — burner actually needs the SOL.
       if (sharedAvailable) {
-        await sharedTopUp(burner.publicKey);
+        await sharedTopUp(burner.publicKey, selectedRelayer?.desc.baseUrl ?? "");
       } else if (localAvailable) {
         await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
       } else {
@@ -589,7 +599,7 @@ export default function App() {
             {miningMode === "shared" && shared && (
               <>
                 <span className="wallet-address">
-                  relayer {shared.pubkey.toBase58().slice(0, 8)}… ({(shared.balance / 1e9).toFixed(4)} SOL)
+                  relayer {selectedRelayer?.desc.name ? `${selectedRelayer.desc.name} ` : ""}{shared.pubkey.toBase58().slice(0, 8)}… ({(shared.balance / 1e9).toFixed(4)} SOL)
                 </span>
                 {shared.dailyRemaining !== undefined && (
                   <span className="wallet-address" title="Total relayer SOL outflow remaining today (resets daily)">

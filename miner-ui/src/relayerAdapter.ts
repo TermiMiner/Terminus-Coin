@@ -57,10 +57,11 @@ export interface SharedRelayerInfo {
  * returns its pubkey + balance (and quota info when KV is enabled).
  * Pass `walletPubkey` to include this wallet's remaining topup quota.
  */
-export async function fetchSharedRelayerInfo(walletPubkey?: PublicKey): Promise<SharedRelayerInfo | null> {
-  const url = walletPubkey
-    ? `/api/relayer-info?wallet=${walletPubkey.toBase58()}`
-    : `/api/relayer-info`;
+export async function fetchSharedRelayerInfo(walletPubkey?: PublicKey, baseUrl = ""): Promise<SharedRelayerInfo | null> {
+  // baseUrl "" = same-origin (this deployment); a cross-origin relayer passes its
+  // absolute https origin. Cross-origin probes require the relayer to serve CORS.
+  const q = walletPubkey ? `?wallet=${walletPubkey.toBase58()}` : "";
+  const url = `${baseUrl}/api/relayer-info${q}`;
   // NB: network errors and non-2xx responses (including the API's own 500 when
   // RELAYER_SECRET_KEY is unset or the RPC is down) propagate as throws. The
   // caller treats a throw as "relayer availability unknown" and keeps retrying,
@@ -84,12 +85,12 @@ export async function fetchSharedRelayerInfo(walletPubkey?: PublicKey): Promise<
   };
 }
 
-export function sharedRelayerAdapter(pubkey: PublicKey): BroadcastAdapter {
+export function sharedRelayerAdapter(pubkey: PublicKey, baseUrl = ""): BroadcastAdapter {
   return {
     pubkey,
     signAndBroadcast: async (tx) => {
       const b64 = Buffer.from(tx.serialize({ requireAllSignatures: false })).toString("base64");
-      const res = await fetch("/api/relay", {
+      const res = await fetch(`${baseUrl}/api/relay`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transaction: b64 }),
@@ -107,8 +108,8 @@ export function sharedRelayerAdapter(pubkey: PublicKey): BroadcastAdapter {
  *   - recipient's balance is below the cap
  *   - per-call lamport amount is fixed
  */
-export async function sharedTopUp(recipient: PublicKey): Promise<{ skipped?: boolean; signature?: string }> {
-  const res = await fetch("/api/topup", {
+export async function sharedTopUp(recipient: PublicKey, baseUrl = ""): Promise<{ skipped?: boolean; signature?: string }> {
+  const res = await fetch(`${baseUrl}/api/topup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ recipient: recipient.toBase58() }),

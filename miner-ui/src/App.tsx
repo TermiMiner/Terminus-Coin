@@ -4,7 +4,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { useChainState, SUPPLY_CAP } from "./useChainState";
 import { useMiner } from "./useMiner";
 import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
-import { loadRelayers, probeAll, selectCheapest, type RelayerStatus } from "./relayers";
+import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, type RelayerStatus } from "./relayers";
 import {
   BrowserKeypairWallet,
   BURNER_STORAGE_KEY,
@@ -118,6 +118,17 @@ export default function App() {
   // Stays false while probing fails, so a SOL-less burner waits in `loading`
   // rather than being pushed to a topup it can't perform.
   const [sharedProbed, setSharedProbed] = useState(false);
+  // Manual relayer pin (baseUrl) overriding AUTO selection; null = AUTO (cheapest).
+  const [pinnedRelayer, setPinnedRelayer] = useState<string | null>(
+    () => localStorage.getItem("terminus.pinned_relayer"),
+  );
+  useEffect(() => {
+    if (pinnedRelayer === null) localStorage.removeItem("terminus.pinned_relayer");
+    else localStorage.setItem("terminus.pinned_relayer", pinnedRelayer);
+  }, [pinnedRelayer]);
+  // Bump to force an immediate re-probe (after adding/removing a custom relayer).
+  const [relayerListVersion, setRelayerListVersion] = useState(0);
+  const [addRelayerInput, setAddRelayerInput] = useState("");
   useEffect(() => {
     let cancelled = false;
     const probe = async () => {
@@ -130,7 +141,7 @@ export default function App() {
     probe();
     const id = setInterval(probe, 30_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [activeWallet.publicKey?.toBase58()]);
+  }, [activeWallet.publicKey?.toBase58(), relayerListVersion]);
 
   const isBurner = !phantom.publicKey && !!burner.publicKey;
 
@@ -163,7 +174,16 @@ export default function App() {
   const tipCeil = chain
     ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
     : Number(MAX_TIP_TERM);
-  const selectedRelayer = selectCheapest(relayerStatuses, tipCeil, () => 0);
+  // AUTO = cheapest feasible; a manual pin overrides it (honored even if the
+  // pinned relayer is infeasible — the tipFloorBlocksStart guard then blocks
+  // Start and warns). A pinned relayer that's gone/unreachable falls back to AUTO.
+  const selectedRelayer = (() => {
+    if (pinnedRelayer !== null) {
+      const pinned = relayerStatuses.find((s) => s.desc.baseUrl === pinnedRelayer);
+      if (pinned?.reachable && pinned.info?.pubkey) return pinned;
+    }
+    return selectCheapest(relayerStatuses, tipCeil, () => 0);
+  })();
   const shared: SharedRelayerInfo | null = selectedRelayer?.info ?? null;
   const tipFloor = shared?.minTipTerm ?? 0;
 
@@ -573,6 +593,72 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* RELAYERS — the discovered relayer set: probed status, the AUTO/pinned
+          selection, and add/remove for custom URLs. Shown when relayer routing
+          is in play (AUTO or SHARED). */}
+      {activeWallet.publicKey
+        && (modePreference === "auto" || modePreference === "shared" || miningMode === "shared")
+        && relayerStatuses.length > 0 && (
+        <div className="wallet-bar" style={{ flexWrap: "wrap" }}>
+          <span className="wallet-address" title="Relayers from the bundled list, runtime roster, and your custom URLs. AUTO routes through the cheapest feasible one; PIN forces a specific relayer.">
+            RELAYERS:
+          </span>
+          {relayerStatuses.map((s) => {
+            const sel = selectedRelayer?.desc.baseUrl === s.desc.baseUrl;
+            const floor = s.info?.minTipTerm ?? 0;
+            const ready = s.reachable
+              && floor <= tipCeil
+              && (s.info?.dailyRemaining === undefined || s.info.dailyRemaining > 0);
+            const state = !s.reachable ? "○ down"
+              : floor > tipCeil ? "⚠ floor too high"
+              : (s.info?.dailyRemaining !== undefined && s.info.dailyRemaining <= 0) ? "⚠ no quota"
+              : "● ready";
+            const name = s.desc.name ?? (s.desc.baseUrl === "" ? "same-origin" : s.desc.baseUrl.replace(/^https:\/\//, ""));
+            const isPinned = pinnedRelayer === s.desc.baseUrl;
+            return (
+              <span key={s.desc.baseUrl} className="wallet-address"
+                style={{ color: sel ? "#00ff99" : ready ? undefined : "var(--grey)" }}>
+                {isPinned ? "📌 " : sel ? "★ " : ""}{name}
+                {s.reachable && ` · ${(floor / 1e6).toFixed(2)} TERM`} · {state}
+                {(s.reachable || isPinned) && (
+                  <button className="btn" style={{ marginLeft: 4 }}
+                    onClick={() => setPinnedRelayer(isPinned ? null : s.desc.baseUrl)}
+                    title={isPinned ? "Unpin — return to AUTO (cheapest feasible)" : "Pin — always route through this relayer"}>
+                    [ {isPinned ? "AUTO" : "PIN"} ]
+                  </button>
+                )}
+                {s.desc.source === "custom" && (
+                  <button className="btn" style={{ marginLeft: 2 }}
+                    onClick={() => {
+                      removeCustomRelayer(s.desc.baseUrl);
+                      if (pinnedRelayer === s.desc.baseUrl) setPinnedRelayer(null);
+                      setRelayerListVersion((v) => v + 1);
+                    }}
+                    title="Remove this custom relayer">
+                    [ × ]
+                  </button>
+                )}
+              </span>
+            );
+          })}
+          <input
+            placeholder="add relayer https URL…"
+            value={addRelayerInput}
+            onChange={(e) => setAddRelayerInput(e.target.value)}
+            style={{ minWidth: 180, background: "transparent", border: "1px solid var(--grey)",
+                     color: "inherit", padding: "2px 6px", font: "inherit" }}
+          />
+          <button className="btn"
+            onClick={() => {
+              if (addCustomRelayer(addRelayerInput)) { setAddRelayerInput(""); setRelayerListVersion((v) => v + 1); }
+              else alert("Enter a valid https relayer URL, e.g. https://relay.example.com");
+            }}
+            title="Add a custom relayer by URL (https only)">
+            [ + ADD ]
+          </button>
+        </div>
+      )}
 
       {/* MODE — single source of truth for how the next claim will be routed.
           Replaces the prior SHARED/LOCAL RELAYER bars which let users guess. */}

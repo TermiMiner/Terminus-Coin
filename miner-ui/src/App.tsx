@@ -186,12 +186,19 @@ export default function App() {
     ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
     : Number(MAX_TIP_TERM);
   // AUTO = cheapest feasible; a manual pin overrides it (honored even if the
-  // pinned relayer is infeasible — the tipFloorBlocksStart guard then blocks
-  // Start and warns). A pinned relayer that's gone/unreachable falls back to AUTO.
+  // pinned relayer's floor is infeasible — the tipFloorBlocksStart guard then
+  // blocks Start and warns). A pinned relayer that's gone/unreachable OR out of
+  // daily quota falls back to AUTO — routing to a no-quota relayer would just
+  // 429 at broadcast on every claim. (Reliability failover is still deferred.)
   const selectedRelayer = (() => {
     if (pinnedRelayer !== null) {
       const pinned = relayerStatuses.find((s) => s.desc.baseUrl === pinnedRelayer);
-      if (pinned?.reachable && pinned.info?.pubkey) return pinned;
+      if (
+        pinned?.reachable && pinned.info?.pubkey
+        && (pinned.info.dailyRemaining === undefined || pinned.info.dailyRemaining > 0)
+      ) {
+        return pinned;
+      }
     }
     return selectCheapest(relayerStatuses, tipCeil, () => 0);
   })();
@@ -215,10 +222,12 @@ export default function App() {
   // mode). Self-fund is strictly better when feasible. Relayer routing is
   // reserved as a SUBSIDY/fallback for fresh wallets without SOL.
   //
-  // Burner self-fund needs ≥ ~0.003 SOL (bond + UserState + ATA + tx fee
-  // for first claim). Repeat claims need far less; the first-claim
-  // threshold is the conservative "ready" check.
-  const SELF_FUND_MIN_LAMPORTS = 3_500_000;
+  // Cold first-claim cost (self-fund — the wallet pays all rent + fee) ≈ 4.39M
+  // lamports: user TERM ATA 2,039,280 + bond (57B) 1,287,600 + UserState (24B)
+  // 1,057,920 + ~5K fee. The gate MUST exceed this, or a wallet passes here and
+  // then fails on-chain at first claim (this stranded a real wallet). Repeat
+  // claims cost only the ~5K fee. 4.6M leaves ~0.2M headroom for fee variance.
+  const SELF_FUND_MIN_LAMPORTS = 4_600_000;
   const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
   // External wallets (Phantom) must actually have SOL to self-fund — connecting
   // without funds is not enough. The previous logic let any connected Phantom

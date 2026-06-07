@@ -266,6 +266,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 - [x] **In-UI FAQ** explaining every option in plain language: routing modes (AUTO / SELF-FUND / SHARED / LOCAL), the RELAYERS panel (relayer list, ● ready / ○ down, ★ auto / 📌 pin, add-relayer URL), claim tips (the floor + presets), burner vs Phantom wallets, and the anti-Sybil bond. New crypto users need this in-context, not buried in external docs.
 - [x] **One-click start for newcomers** — opening the page and pressing **Start mining** should Just Work with everything on AUTO: auto-generate a burner when no wallet is connected, keep `modePreference = AUTO`, and route automatically (relayer for a 0-SOL burner). Goal: zero config and zero crypto knowledge required to begin mining.
+- [ ] **Load distribution across ≥2 production relayers** (deferred; not testable until a second production relayer exists). Relayer selection is currently deterministic *prefer-home* — cheapest-feasible, near-ties broken toward the bundled/same-origin relayer; the randomized weighting in `selectCheapest` was removed as dead code. When a second relayer is real, design a ranking signal (health / least-loaded / reputation) and implement it as a STABLE per-probe choice held in state — **never a render-time `Math.random`** (selection runs in App's render body, so random there re-rolls the relayer on every re-render).
 
 ---
 

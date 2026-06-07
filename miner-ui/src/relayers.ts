@@ -148,26 +148,23 @@ export function eligibleRelayers(statuses: RelayerStatus[], tipCeilRaw: number):
   });
 }
 
-// "Cheapest that clears" — lowest floor among eligible. To avoid a thundering
-// herd draining the single cheapest relayer's quota, treat floors within a small
-// band of the minimum as one tier and pick within it weighted by remaining quota.
-const CHEAPEST_TIER_BAND = 100_000; // 0.1 TERM raw
+// Deterministic "cheapest, prefer-home" selection: the lowest-floor eligible
+// relayer, with near-ties (within CHEAPEST_TIER_BAND) broken by list order — which
+// puts the bundled / same-origin relayer first. For a young network that's a
+// deliberate policy: prefer the relayer you operate, monitor, and serve CORS-free
+// over unvetted community ones, unless one is meaningfully cheaper.
+//
+// Intentionally NOT randomized load-spreading. Distributing load across ≥2
+// production relayers needs a real ranking signal (health / least-loaded /
+// reputation) AND a stable per-probe choice held in state — never a render-time
+// Math.random (selectCheapest runs in App's render body, so random there would
+// re-roll the selected relayer on every re-render). See MAINNET_CHECKLIST §7;
+// revisit when a second production relayer actually exists.
+const CHEAPEST_TIER_BAND = 100_000; // 0.1 TERM raw — cost-tolerance for prefer-home
 
-export function selectCheapest(
-  statuses: RelayerStatus[],
-  tipCeilRaw: number,
-  rand: () => number = Math.random,
-): RelayerStatus | null {
+export function selectCheapest(statuses: RelayerStatus[], tipCeilRaw: number): RelayerStatus | null {
   const eligible = eligibleRelayers(statuses, tipCeilRaw);
   if (eligible.length === 0) return null;
   const minFloor = Math.min(...eligible.map(floorOf));
-  const tier = eligible.filter((s) => floorOf(s) <= minFloor + CHEAPEST_TIER_BAND);
-  const weight = (s: RelayerStatus) => Math.max(1, s.info?.dailyRemaining ?? 1);
-  const total = tier.reduce((a, s) => a + weight(s), 0);
-  let r = rand() * total;
-  for (const s of tier) {
-    r -= weight(s);
-    if (r <= 0) return s;
-  }
-  return tier[0];
+  return eligible.find((s) => floorOf(s) <= minFloor + CHEAPEST_TIER_BAND) ?? eligible[0];
 }

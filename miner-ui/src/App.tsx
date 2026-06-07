@@ -181,9 +181,11 @@ export default function App() {
   // and the AUTO-selected relayer — cheapest FEASIBLE among all probed relayers.
   // `shared` is just the selected relayer's info, so the mode machinery below is
   // unchanged: with one relayer (the bundled same-origin one) this is byte-
-  // identical to the previous single-relayer behavior. `() => 0` makes selection
-  // deterministic (first in the cheapest tier — prefers the bundled relayer);
-  // randomized load-spreading + manual pinning come in step ③.
+  // identical to the previous single-relayer behavior. Selection is deterministic
+  // "prefer-home" — cheapest feasible, near-ties broken toward the bundled relayer
+  // (see selectCheapest). NOT randomized: distributing load across ≥2 production
+  // relayers is a deferred, ranking-based design (MAINNET_CHECKLIST §7), never a
+  // render-time random.
   const tipCeil = chain
     ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
     : Number(MAX_TIP_TERM);
@@ -202,7 +204,7 @@ export default function App() {
         return pinned;
       }
     }
-    return selectCheapest(relayerStatuses, tipCeil, () => 0);
+    return selectCheapest(relayerStatuses, tipCeil);
   })();
   const shared: SharedRelayerInfo | null = selectedRelayer?.info ?? null;
   const tipFloor = shared?.minTipTerm ?? 0;

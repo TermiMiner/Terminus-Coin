@@ -1144,7 +1144,7 @@ export default function App() {
 
       {/* Footer */}
       <div className="footer">
-        Supply cap: 1,000,000,000 TERM &nbsp;|&nbsp; Burn: 1% &nbsp;|&nbsp; Treasury: 0.5%
+        Supply cap: 1,000,000,000 TERM &nbsp;|&nbsp; Burn: 0.25–5% &nbsp;|&nbsp; Treasury: 3%
         &nbsp;|&nbsp; RPC: {import.meta.env.VITE_RPC_URL ?? "http://127.0.0.1:8899"}
       </div>
     </div>

@@ -42,7 +42,7 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "What is staking?",
-    a: "In the STAKE tab you can stake TERM to earn a share of the treasury — a cut taken from every claim across the network. Your stake stays yours; unstake anytime.",
+    a: "In the STAKE tab you can stake TERM to earn a share of the treasury — 3% of every claim's reward (plus a small fixed fee per claim) is set aside for stakers and split across everyone staking. Your stake stays yours; unstake anytime.",
   },
   {
     q: "Is my TERM safe?",

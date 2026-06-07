@@ -149,7 +149,7 @@ pub mod terminuscoin {
         msg!("Hard cap : 1,000,000,000 TERM");
         msg!("Emission : 17 TERM/claim epoch 0, halving every 5 yrs, 50yr programme (~894M total mined)");
         msg!("Team     : 100M TERM (10%%) in 4 tranches over 10 years");
-        msg!("Mechanism: PoW keccak256 | Burn 1pct | Treasury 3pct + 0.01 TERM/claim fee -> staking");
+        msg!("Mechanism: PoW keccak256 | Burn 0.25-5pct | Treasury 3pct + 0.01 TERM/claim fee -> staking");
         msg!("Authority: {}", ctx.accounts.authority.key());
         msg!("Source code is public and verifiable on-chain.");
         Ok(())

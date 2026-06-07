@@ -61,7 +61,7 @@ export default function HelpTab({
 }) {
   const [showKey, setShowKey] = useState(false);
   const [copied, setCopied] = useState(false);
-  const key = burner.exportAsBase58();
+  const key = showKey ? burner.exportAsBase58() : null;
 
   const copy = () => {
     if (!key) return;

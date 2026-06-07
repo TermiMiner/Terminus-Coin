@@ -43,8 +43,9 @@ export default function ClaimReveal({ lastEvent }: { lastEvent: MinerEvent | nul
   useEffect(() => {
     if (!shown) return;
     const t = tierOf(shown.bonusBits ?? 0);
+    if (!t.countUp) return; // base/lucky read shown.termGross directly — no count-up, no state to set
     const target = shown.termGross ?? 0;
-    if (!t.countUp || target <= 0 || reducedMotion()) { setDisplayTerm(target); return; }
+    if (target <= 0 || reducedMotion()) { setDisplayTerm(target); return; }
     let raf = 0;
     const start = performance.now();
     const step = (now: number) => {

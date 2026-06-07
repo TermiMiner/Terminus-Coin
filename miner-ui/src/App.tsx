@@ -3,6 +3,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { useChainState, SUPPLY_CAP } from "./useChainState";
 import { useMiner } from "./useMiner";
+import ClaimReveal from "./ClaimReveal";
 import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
 import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, type RelayerStatus } from "./relayers";
 import {
@@ -307,7 +308,7 @@ export default function App() {
   // "tip" would be a no-op self-transfer (miner ATA → miner ATA) that just
   // burns compute units and confuses balances. Force 0 unless relayed.
   const effectiveTip = (miningMode === "shared" || miningMode === "local") ? claimTip : 0;
-  const { status, logs, hashrate, start: rawStart, stop } = useMiner(
+  const { status, logs, hashrate, lastEvent, start: rawStart, stop } = useMiner(
     connection,
     activeWallet,
     broadcaster,
@@ -541,6 +542,7 @@ export default function App() {
 
   return (
     <div className="terminal">
+      <ClaimReveal lastEvent={lastEvent} />
       {/* Header */}
       <div className="header">
         <img src={logoUrl} alt="Terminus Coin" className="header-logo" />

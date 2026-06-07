@@ -25,6 +25,17 @@ function mkLog(level: LogEntry["level"], text: string): LogEntry {
   return { id: logSeq++, level, text };
 }
 
+// Claim event for the on-screen reveal (ClaimReveal) — typed data so the
+// animation reacts to a landed claim without parsing log strings. Purely
+// additive; the terminal log is unchanged.
+export interface MinerEvent {
+  seq: number;              // monotonic — fires the reveal even on repeat values
+  kind: "claimed";
+  bonusBits: number;        // 0..=8 — the slot-machine reveal
+  termGross: number;        // expected gross TERM for this claim
+}
+let eventSeq = 0;
+
 function ts(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
@@ -104,6 +115,10 @@ export function useMiner(
     mkLog("dim", `[${ts()}] Terminus Coin miner ready. Connect wallet to start.`),
   ]);
   const [hashrate, setHashrate] = useState<number | null>(null);
+  const [lastEvent, setLastEvent] = useState<MinerEvent | null>(null);
+  function emit(e: Omit<MinerEvent, "seq">) {
+    setLastEvent({ ...e, seq: eventSeq++ });
+  }
 
   const workerRef = useRef<Worker | null>(null);
   const shouldRestartRef = useRef(false);
@@ -314,6 +329,7 @@ export function useMiner(
           // Reveal the bonus along with the claim — the slot-machine moment.
           const level: "info" | "success" = bonusBits >= 4 ? "success" : "info";
           appendLog(level, `[${ts()}] Claimed! tx=${sig.slice(0, 16)}… — Bonus +${bonusBits} bits → ~${expectedTerm} TERM gross${luckLabel}`);
+          emit({ kind: "claimed", bonusBits, termGross: Number(expectedTerm) });
           backoffMs = 0;
         } catch (err: any) {
           const friendly = friendlyClaimError(err);
@@ -367,5 +383,5 @@ export function useMiner(
   // stop worker on unmount
   useEffect(() => () => { workerRef.current?.terminate(); }, []);
 
-  return { status, logs, hashrate, start, stop };
+  return { status, logs, hashrate, lastEvent, start, stop };
 }

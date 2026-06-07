@@ -264,8 +264,8 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 ### UX / onboarding (new-user friendliness)
 
-- [ ] **In-UI FAQ** explaining every option in plain language: routing modes (AUTO / SELF-FUND / SHARED / LOCAL), the RELAYERS panel (relayer list, ● ready / ○ down, ★ auto / 📌 pin, add-relayer URL), claim tips (the floor + presets), burner vs Phantom wallets, and the anti-Sybil bond. New crypto users need this in-context, not buried in external docs.
-- [ ] **One-click start for newcomers** — opening the page and pressing **Start mining** should Just Work with everything on AUTO: auto-generate a burner when no wallet is connected, keep `modePreference = AUTO`, and route automatically (relayer for a 0-SOL burner). Goal: zero config and zero crypto knowledge required to begin mining.
+- [x] **In-UI FAQ** explaining every option in plain language: routing modes (AUTO / SELF-FUND / SHARED / LOCAL), the RELAYERS panel (relayer list, ● ready / ○ down, ★ auto / 📌 pin, add-relayer URL), claim tips (the floor + presets), burner vs Phantom wallets, and the anti-Sybil bond. New crypto users need this in-context, not buried in external docs.
+- [x] **One-click start for newcomers** — opening the page and pressing **Start mining** should Just Work with everything on AUTO: auto-generate a burner when no wallet is connected, keep `modePreference = AUTO`, and route automatically (relayer for a 0-SOL burner). Goal: zero config and zero crypto knowledge required to begin mining.
 
 ---
 

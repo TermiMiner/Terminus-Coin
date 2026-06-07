@@ -4,6 +4,7 @@ import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { useChainState, SUPPLY_CAP } from "./useChainState";
 import { useMiner } from "./useMiner";
 import ClaimReveal from "./ClaimReveal";
+import HelpTab from "./HelpTab";
 import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
 import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, type RelayerStatus } from "./relayers";
 import {
@@ -52,7 +53,7 @@ export default function App() {
   // Burner + (optional) local relayer wallets. Local relayer is for users
   // running `npm run dev` against their own keypair. The deployed site uses
   // a server-side shared relayer (see fetchSharedRelayerInfo).
-  const [tab, setTab] = useState<"mine" | "stake">("mine");
+  const [tab, setTab] = useState<"mine" | "stake" | "help">("mine");
 
   // Collapsible stats sections — default collapsed on mobile, persisted across reloads.
   // Initial value is read from localStorage, falling back to viewport width.
@@ -935,6 +936,7 @@ export default function App() {
       <div className="tab-strip">
         <button className={`tab ${tab === "mine" ? "active" : ""}`} onClick={() => setTab("mine")}>[ MINE ]</button>
         <button className={`tab ${tab === "stake" ? "active" : ""}`} onClick={() => setTab("stake")}>[ STAKE ]</button>
+        <button className={`tab ${tab === "help" ? "active" : ""}`} onClick={() => setTab("help")}>[ HELP ]</button>
       </div>
 
       {tab === "mine" && (<>
@@ -1131,6 +1133,14 @@ export default function App() {
         )}
       </div>
       </>)}
+
+      {tab === "help" && (
+        <HelpTab
+          burner={burner}
+          isBurner={isBurner}
+          walletConnected={!!activeWallet.publicKey}
+        />
+      )}
 
       {/* Footer */}
       <div className="footer">

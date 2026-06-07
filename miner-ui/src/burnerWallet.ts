@@ -131,6 +131,12 @@ export class BrowserKeypairWallet implements MinerWallet {
     return JSON.stringify(Array.from(this.keypair.secretKey));
   }
 
+  // base58-encoded secret key — the format Phantom's "Import Private Key" expects.
+  exportAsBase58(): string | null {
+    if (!this.keypair) return null;
+    return bs58.encode(this.keypair.secretKey);
+  }
+
   clear(): void {
     this.keypair = null;
     localStorage.removeItem(this.storageKey);

@@ -12,7 +12,24 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import "./terminal.css";
 import App from "./App";
 
-const RPC_URL = import.meta.env.VITE_RPC_URL ?? "https://api.devnet.solana.com";
+// Resolve the RPC endpoint at build time. Never silently default to a public
+// network: a production build with VITE_RPC_URL unset fails loud — the
+// client-side mirror of the server-side RPC_URL guard — instead of quietly
+// running the whole app against devnet. In dev, default to the local validator
+// (matches .env.example), which fails obviously (connection refused) if absent.
+function resolveRpcUrl(): string {
+  const url = import.meta.env.VITE_RPC_URL?.trim();
+  if (url) return url;
+  if (import.meta.env.PROD) {
+    throw new Error(
+      "VITE_RPC_URL is not set — refusing to default to a public RPC in a production build. " +
+        "Set VITE_RPC_URL to your cluster's RPC at build time.",
+    );
+  }
+  return "http://127.0.0.1:8899"; // dev default: local validator
+}
+
+const RPC_URL = resolveRpcUrl();
 
 function Root() {
   const wallets = useMemo(

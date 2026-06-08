@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, SendTransactionError, Transaction } from "@solana/web3.js";
 import { Redis } from "@upstash/redis";
 import { waitUntil } from "@vercel/functions";
 import { createHash } from "node:crypto";
@@ -273,13 +273,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     let sig: string;
     try {
+      // skipPreflight:false → the RPC simulates (preflight) before forwarding. A
+      // doomed claim (tip > cap/net_reward, frozen wallet, stale nonce) fails
+      // preflight and is NEVER submitted, so the relayer pays no gas for it.
       sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-    } catch (err) {
-      // Broadcast failed — release the reservation so the budget stays honest.
+    } catch (err: any) {
+      // Broadcast/preflight failed — release the reservation so the budget stays honest.
       if (kv && reservedCost > 0) {
         await kv.incrby(spendKey, -reservedCost);
       }
-      throw err;
+      // A preflight rejection is the CLIENT's doomed tx, not a relayer fault.
+      // Report it as 422 with the program logs so monitoring doesn't see a 500
+      // and the UI can show the real reason — instead of a generic server error.
+      if (err instanceof SendTransactionError || Array.isArray(err?.logs)) {
+        return res.status(422).json({
+          error: "claim rejected at simulation — it would fail on-chain, so it was not broadcast",
+          detail: typeof err?.message === "string" ? err.message : undefined,
+          logs: err?.logs ?? null,
+        });
+      }
+      throw err; // genuine relayer/RPC fault → 500
     }
 
     // IP counter increments only on successful broadcast (preserves existing behavior).

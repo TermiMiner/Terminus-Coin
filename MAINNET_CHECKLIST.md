@@ -245,6 +245,17 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 - [ ] All critical and high findings resolved
 - [ ] Audit report published
 
+### Dependency advisories (`npm audit`) — triaged 2026-06-08
+
+`miner-ui` after `npm audit fix` (non-breaking): **9 production advisories (3 high, 6 moderate)**, all transitive in the Solana SDK / wallet-adapter chain with no non-breaking fix. Triaged, not ignored:
+
+- **3 high — `bigint-buffer` / `@solana/buffer-layout-utils` / `@solana/spl-token`** (buffer overflow in `bigint-buffer`). npm's only offered "fix" is downgrading `@solana/spl-token` to **0.1.8** (pre-0.2 API — would break the app); not viable. `bigint-buffer` (de)serializes fixed-width u64s from program-defined layouts, not attacker-controlled arbitrary-length buffers, so real exposure is low. Upstream-blocked — track `@solana/spl-token` dropping `bigint-buffer`.
+- **6 moderate — `@solana/web3.js`, `@coral-xyz/anchor`, `jayson`, `uuid`, `@solana/wallet-adapter-solflare`, `@solflare-wallet/sdk`.** `web3.js`/`anchor`/`jayson`/`uuid` have **no fix**; the solflare pair only "fix" via a breaking downgrade. All transitive; accepted + tracked.
+- **Fixed 2026-06-08:** `ws` 8.20.0 → 8.21.0 (uninitialized-memory disclosure) via `npm audit fix`; build re-verified green.
+- **Dev-only (NOT shipped):** the `@vercel/node` chain (`undici`, `path-to-regexp`, `minimatch`) and `vite-plugin-node-polyfills` (`elliptic`, `crypto-browserify`) — build/runtime tooling, absent from the browser bundle; the deployed serverless runtime is Vercel-managed.
+
+**For the audit firm:** these are known, upstream-blocked transitive advisories flagged for awareness, not action items — the on-chain program (the audit's real scope) has no npm dependency surface. Re-run `npm audit` at each Solana SDK bump and adopt any that gain a non-breaking fix.
+
 ---
 
 ## 6. Closed beta on devnet

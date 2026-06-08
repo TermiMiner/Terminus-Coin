@@ -276,6 +276,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 - [ ] X/Twitter account live
 - [ ] Landing page (description, tokenomics, mining instructions, links to UI/explorer)
 - [ ] Initial announcement post drafted
+- [ ] **Describe the trust model accurately** — the program is **multisig-gated upgradeable** (upgrades require the Squads 2-of-3 hardware multisig, → DAO later per §1), NOT "immutable" / "non-upgradeable." Publish: "no single party can unilaterally change the code; upgrades require 2-of-3 hardware signers." True immutability would be the `--final` path §1 deliberately rejects — don't imply it.
 
 ---
 

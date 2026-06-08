@@ -8,6 +8,15 @@ skip-lint = false
 [programs.localnet]
 terminuscoin = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y"
 
+# Devnet + mainnet reuse the same program ID — it's baked into the binary by
+# declare_id!(...) in lib.rs. A distinct mainnet ID would require regenerating
+# the program keypair and updating declare_id! before building.
+[programs.devnet]
+terminuscoin = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y"
+
+[programs.mainnet]
+terminuscoin = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y"
+
 [registry]
 url = "https://api.apr.dev"
 

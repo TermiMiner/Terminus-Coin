@@ -562,13 +562,13 @@ pub mod terminuscoin {
         // Linear vesting (tranches 1–3) means partial amounts can be available.
         let mut claimable: u64 = 0;
         let mut new_claimed: [u64; 4] = ctx.accounts.team_vest_state.claimed;
-        for i in 0..4usize {
+        for (i, item) in new_claimed.iter_mut().enumerate() {
             let vested = tranche_vested(i, elapsed);
             let already = ctx.accounts.team_vest_state.claimed[i];
             let unclaimed = vested.saturating_sub(already);
             if unclaimed > 0 {
                 claimable = claimable.saturating_add(unclaimed);
-                new_claimed[i] = vested;
+                *item = vested;
             }
         }
         require!(claimable > 0, ErrorCode::NothingVested);

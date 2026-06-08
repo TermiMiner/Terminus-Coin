@@ -284,6 +284,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 - [ ] Run a sanity claim from a fresh wallet on mainnet
 - [ ] Confirm metadata appears correctly in Phantom and Solscan
 - [ ] Confirm `solana program show <PROGRAM_ID>` shows the expected upgrade authority
+- [ ] **Confirm on-chain bytecode == the audited build** — `solana program dump <PROGRAM_ID> /tmp/onchain.so --url <RPC>`, then compare `sha256sum` of its first N bytes (N = size of the `anchor build --verifiable` artifact) to that artifact, or run `solana-verify`. `mainnet-launch.sh` does this automatically right after deploy; re-run here if the program was deployed outside the script. (Verifies the *code* — `program show` only checks the authority.)
 - [ ] Confirm `getAccountInfo` for GlobalState shows expected values (initial difficulty, total_minted = 100M reserved for team, etc.)
 - [ ] Confirm the `initialize` tx logs show the correct economics (`Burn 0.25-5pct | Treasury 3pct`, hard cap, emission, team) — init-log strings audited + corrected 2026-06-06 (commit `54501a4`; only `Burn 1pct` was stale, the rest were already accurate). `initialize` runs **once** on a non-upgradeable program, so this log is permanent: spot-check the init tx on Solscan before announcing.
 - [ ] Verify miner-ui can connect, derive PDAs, and submit a real claim

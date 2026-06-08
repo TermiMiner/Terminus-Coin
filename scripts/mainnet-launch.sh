@@ -103,6 +103,12 @@ if [[ -f "$DEVNET_WALLET" ]]; then
 fi
 
 BALANCE_SOL=$(solana balance "$WALLET" --url "$RPC" 2>/dev/null | awk '{print $1}')
+# Fail loud on an empty/garbled balance — otherwise bc errors to empty, (( ))
+# reads it as 0, and the gate below silently PASSES on an insufficient balance.
+if ! [[ "$BALANCE_SOL" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "ERROR: balance query failed or returned non-numeric ('${BALANCE_SOL:-empty}'). Aborting."
+  exit 1
+fi
 echo "Balance         : $BALANCE_SOL SOL"
 if (( $(echo "$BALANCE_SOL < $MIN_SOL_REQUIRED" | bc -l) )); then
   echo "ERROR: need at least $MIN_SOL_REQUIRED SOL, have $BALANCE_SOL"
@@ -125,6 +131,23 @@ else
     --keypair "$WALLET" \
     --program-id "$PROGRAM_KEYPAIR"
 fi
+
+# Post-deploy: confirm what LANDED on-chain equals the audited binary we hashed —
+# `program show` checks only the authority, not the code. Runs on the
+# already-deployed path too. solana program dump can right-pad with zeros to the
+# account size, so compare only the first ORIG_SIZE bytes against the local .so.
+section "1b. Verify on-chain bytecode == audited binary"
+ONCHAIN_DUMP="$(mktemp)"
+solana program dump "$PROGRAM_ID" "$ONCHAIN_DUMP" --url "$RPC" >/dev/null
+ORIG_SIZE=$(stat -c%s "$PROGRAM_BINARY" 2>/dev/null || stat -f%z "$PROGRAM_BINARY")
+ONCHAIN_SHA=$(head -c "$ORIG_SIZE" "$ONCHAIN_DUMP" | sha256sum | awk '{print $1}')
+rm -f "$ONCHAIN_DUMP"
+if [[ "$ONCHAIN_SHA" != "$BINARY_SHA" ]]; then
+  echo "ERROR: on-chain bytecode sha256 ($ONCHAIN_SHA) != audited binary ($BINARY_SHA)."
+  echo "       What is deployed does NOT match the audited artifact — STOP and investigate."
+  exit 1
+fi
+echo "✓ On-chain bytecode matches the audited binary (first $ORIG_SIZE bytes, sha256 $BINARY_SHA)."
 
 # ─── 2. Initialize (mints NOTHING) ────────────────────────────────────────────
 section "2. Initialize program + stake pool + bond vault (initialize_program.ts — no mint)"

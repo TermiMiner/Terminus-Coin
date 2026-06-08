@@ -43,7 +43,6 @@ const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_T
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
     const raw = process.env.RELAYER_SECRET_KEY;
     if (!raw) {
       // No relayer configured on this deployment. Return a DEFINITIVE 200
@@ -53,6 +52,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // 200 with no pubkey to null.
       return res.status(200).json({ configured: false });
     }
+    // RPC only matters once a relayer IS configured. Fail loud if RPC_URL is
+    // unset — never silently default to a public endpoint (a mainnet deploy
+    // must not route to the wrong network).
+    const rpc = (process.env.RPC_URL ?? "").trim();
+    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
     const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
     const conn = new Connection(rpc, "confirmed");
     const balance = await conn.getBalance(relayer.publicKey);

@@ -70,7 +70,7 @@ In Vercel project settings → **Environment Variables**, add:
 |---|---|---|
 | `RELAYER_SECRET_KEY` | Content of `relayer-keypair.json` — the `[1,2,…,64]` array | Paste the whole array. Never share. |
 | `VITE_RELAYER_PUBKEY` | Pubkey from `solana-keygen pubkey` | Public — used by frontend to detect shared mode |
-| `RPC_URL` | `https://api.devnet.solana.com` or your private RPC | Trailing whitespace matters — none |
+| `RPC_URL` | `https://api.devnet.solana.com` (devnet) or your private RPC | **No default — the relayer endpoints return 500 if this is unset** (no silent fallback, so a mainnet deploy can't accidentally route to devnet). Trailing whitespace matters — none. |
 
 ### Optional (quota tuning)
 

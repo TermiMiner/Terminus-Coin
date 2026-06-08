@@ -194,8 +194,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Connection is needed for bootstrap-mode first-claim detection AND
-    // the broadcast itself. Construct once and share.
-    const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
+    // the broadcast itself. Construct once and share. Fail loud if RPC_URL is
+    // unset — never silently default to a public endpoint (wrong-network footgun
+    // on a mainnet deploy; the public node is rate-limited anyway).
+    const rpc = (process.env.RPC_URL ?? "").trim();
+    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
     const conn = new Connection(rpc, "confirmed");
 
     // ── Tip-floor + bootstrap policy ───────────────────────────────────

@@ -118,7 +118,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ── On-chain checks ────────────────────────────────────────────────
-    const rpc = (process.env.RPC_URL || "https://api.devnet.solana.com").trim();
+    // Fail loud if RPC_URL is unset — never silently default to a public
+    // endpoint (a mainnet deploy must not route to devnet).
+    const rpc = (process.env.RPC_URL ?? "").trim();
+    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
     const raw = process.env.RELAYER_SECRET_KEY;
     if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
     const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));

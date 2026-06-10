@@ -122,6 +122,7 @@ export function useMiner(
 
   const workerRef = useRef<Worker | null>(null);
   const shouldRestartRef = useRef(false);
+  const lastClaimAtRef = useRef(0); // ms timestamp of the last landed claim — drives the cooldown gate
   const startRef = useRef<() => void>(() => {});
 
   function appendLog(level: LogEntry["level"], text: string) {
@@ -220,6 +221,28 @@ export function useMiner(
         appendLog("dim", `[${ts()}] Found nonce ${nonce} in ${attempts.toLocaleString()} attempts (${(elapsed / 1000).toFixed(2)}s, ~${hr.toLocaleString()} H/s)`);
 
         if (!shouldRestartRef.current) { setStatus("idle"); return; }
+
+        // ── Cooldown gate ──────────────────────────────────────────────────
+        // Hold the (already-mined) nonce until the on-chain rate-limit cooldown
+        // elapses, instead of firing a claim the program would reject with
+        // RateLimitExceeded — which just wastes this mine + a relayer preflight.
+        // The cooldown is Phase-1-only (sunsets at 1 yr), so honor it only while
+        // in Phase 1. Mining usually overlaps the cooldown, so this only holds on
+        // a fast nonce; the rest of the time `remaining` is already ≤ 0.
+        const launchTime = gs.launchTime.toNumber();
+        const rateLimitSec = gs.rateLimitSeconds.toNumber();
+        const inPhase1 = Date.now() / 1000 - launchTime < 31_557_600; // PHASE2_ACTIVATION_SECS
+        const cooldownMs = inPhase1 && rateLimitSec > 0 ? rateLimitSec * 1000 : 0;
+        if (cooldownMs > 0 && lastClaimAtRef.current > 0) {
+          // +2s buffer for client/chain clock drift (confirmation lag already
+          // makes our timer conservative — this is belt-and-suspenders).
+          const remaining = lastClaimAtRef.current + cooldownMs + 2_000 - Date.now();
+          if (remaining > 0) {
+            appendLog("dim", `[${ts()}] Cooldown — holding ${Math.ceil(remaining / 1000)}s before claiming (nonce ready)…`);
+            await new Promise((r) => setTimeout(r, remaining));
+            if (!shouldRestartRef.current) { setStatus("idle"); return; }
+          }
+        }
 
         // Submit claim
         setStatus("submitting");
@@ -330,6 +353,7 @@ export function useMiner(
           const level: "info" | "success" = bonusBits >= 4 ? "success" : "info";
           appendLog(level, `[${ts()}] Claimed! tx=${sig.slice(0, 16)}… — Bonus +${bonusBits} bits → ~${expectedTerm} TERM gross${luckLabel}`);
           emit({ kind: "claimed", bonusBits, termGross: Number(expectedTerm) });
+          lastClaimAtRef.current = Date.now(); // arm the cooldown gate for the next round
           backoffMs = 0;
         } catch (err: any) {
           const friendly = friendlyClaimError(err);

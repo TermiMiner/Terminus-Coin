@@ -3,6 +3,11 @@
 target/
 test-ledger/
 
+# Sec3 X-Ray local scan artifacts (CI runs X-Ray in an ephemeral container;
+# local runs drop these into the working tree).
+.xray/
+*.ll
+
 # Rust
 **/*.rs.bk
 

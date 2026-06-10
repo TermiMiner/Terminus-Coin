@@ -110,33 +110,29 @@ jobs:
 
   sec3-xray:
     name: Sec3 X-Ray (Solana static analysis)
-    runs-on: ubuntu-latest
-    # Requires a Sec3 token in repo secrets as SEC3_AUTH. The job SKIPS cleanly
-    # (does not fail CI) until the secret is set — so the rest of CI is unblocked
-    # while X-Ray is being provisioned. Get a token at https://app.sec3.dev and
-    # add it: Settings → Secrets and variables → Actions → New repository secret.
-    # NOTE: "X-ray" is assumed to mean Sec3 X-Ray (sec3.dev, formerly Soteria) —
-    # the Solana program scanner. Swap this job if a different tool was meant.
-    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest   # GitHub runners ship Docker; nothing to install
+    # Sec3 open-sourced X-Ray as a CLI (github.com/sec3-product/x-ray) — no token,
+    # so it just runs. NON-BLOCKING for now (`|| true`): this surfaces X-Ray's
+    # findings and uploads the report so we can triage them against the program
+    # (X-Ray is prone to flag our saturating_* math / PDA patterns). Once the
+    # findings are triaged, drop `|| true` — or grep the report for "VULNERABLE" —
+    # to make it gate CI. Pinned to a release tag; bump deliberately.
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for Sec3 token
-        id: sec3
+      - name: Run X-Ray scan (informational)
         run: |
-          if [ -n "${{ secrets.SEC3_AUTH }}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::SEC3_AUTH secret not set — skipping Sec3 X-Ray scan."
-          fi
+          docker run --rm --volume "${{ github.workspace }}:/workspace" \
+            ghcr.io/sec3-product/x-ray:v0.0.6 \
+            /workspace/programs/terminuscoin | tee xray-report.txt || true
 
-      - name: Run Sec3 X-Ray scan
-        if: steps.sec3.outputs.enabled == 'true'
-        uses: sec3dev/pro-action@v1
+      - name: Upload X-Ray report
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          sec3-token: ${{ secrets.SEC3_AUTH }}
-          path: programs/terminuscoin
+          name: xray-report
+          path: xray-report.txt
+          retention-days: 14
 
   ts-typecheck:
     name: TypeScript typecheck (miner-ui)

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, master]
 
+# Least privilege — every job here only reads the repo (lint / audit / scan / typecheck).
+permissions:
+  contents: read
+
 jobs:
   rust-build:
     name: Rust build (cargo build-sbf)

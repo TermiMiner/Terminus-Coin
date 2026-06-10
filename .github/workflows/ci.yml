@@ -111,20 +111,38 @@ jobs:
   sec3-xray:
     name: Sec3 X-Ray (Solana static analysis)
     runs-on: ubuntu-latest   # GitHub runners ship Docker; nothing to install
-    # Sec3 open-sourced X-Ray as a CLI (github.com/sec3-product/x-ray) — no token,
-    # so it just runs. NON-BLOCKING for now (`|| true`): this surfaces X-Ray's
-    # findings and uploads the report so we can triage them against the program
-    # (X-Ray is prone to flag our saturating_* math / PDA patterns). Once the
-    # findings are triaged, drop `|| true` — or grep the report for "VULNERABLE" —
-    # to make it gate CI. Pinned to a release tag; bump deliberately.
+    # Sec3 X-Ray CLI (github.com/sec3-product/x-ray) — open-source, no token.
+    # GATES CI: X-Ray is informational (exits 0 even when it reports findings),
+    # so the step greps the report and FAILS on any finding beyond the baselined
+    # false positive — one IntegerDivOverflow in lucky_reward (`u64::MAX /
+    # difficulty`: unsigned div can't overflow; the `difficulty <= 1` guard makes
+    # difficulty >= 2, so no divide-by-zero). Update the baseline below if the
+    # program's accepted-FP set legitimately changes. Pinned to a release tag.
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run X-Ray scan (informational)
+      - name: Run X-Ray scan + gate on new findings
         run: |
+          # 2>&1 is REQUIRED: X-Ray prints the "VULNERABLE: <name>" detector marker
+          # to stderr and "Found a potential vulnerability" to stdout (streams stay
+          # split), and `| tee` captures only stdout — so without 2>&1 the marker is
+          # missing from the report and the gate fails on the baseline. Merge both.
           docker run --rm --volume "${{ github.workspace }}:/workspace" \
             ghcr.io/sec3-product/x-ray:v0.0.6 \
-            /workspace/programs/terminuscoin | tee xray-report.txt || true
+            /workspace/programs/terminuscoin 2>&1 | tee xray-report.txt || true
+          # Fail loud if the scan produced nothing recognizable (image-pull failure
+          # / crash) — otherwise an empty report reads as FOUND=0 = "clean" (fail-open).
+          grep -qE "Detecting Vulnerabilities|attack surface|summary of potential vulnerabilities" xray-report.txt \
+            || { echo "::error::X-Ray produced no recognizable output — scan likely failed."; exit 1; }
+          # Baseline = exactly one accepted false positive (IntegerDivOverflow).
+          FOUND=$(grep -c "Found a potential vulnerability" xray-report.txt || true)
+          echo "X-Ray findings: ${FOUND:-0} (baseline: 1 known IntegerDivOverflow FP)"
+          if [ "${FOUND:-0}" -gt 1 ] || { [ "${FOUND:-0}" -eq 1 ] && ! grep -q "VULNERABLE: IntegerDivOverflow" xray-report.txt; }; then
+            echo "::error::X-Ray surfaced a finding beyond the baselined IntegerDivOverflow false positive — see the xray-report artifact."
+            grep -E "VULNERABLE:|Found a potential vulnerability" xray-report.txt || true
+            exit 1
+          fi
+          echo "X-Ray gate passed — no new findings (only the known FP, or none)."
 
       - name: Upload X-Ray report
         if: always()

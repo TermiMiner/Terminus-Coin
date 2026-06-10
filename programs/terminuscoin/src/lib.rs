@@ -1014,6 +1014,9 @@ fn lucky_reward(base: u64, hash: &[u8; 32], difficulty: u64) -> (u64, u32) {
     let hash_high = u64::from_be_bytes([
         hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
     ]);
+    // Safe div — X-Ray flags IntegerDivOverflow here, a false positive: u64 division
+    // can't overflow, and the `difficulty <= 1` guard above guarantees difficulty >= 2,
+    // so this can't divide by zero either. (CI baselines this single finding.)
     let max_valid = u64::MAX / difficulty;
 
     // Defensive: caller should have already verified meets_difficulty.

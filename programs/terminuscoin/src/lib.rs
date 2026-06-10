@@ -1,16 +1,14 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer};
-use mpl_token_metadata::{
-    instructions::CreateMetadataAccountV3CpiBuilder,
-    types::DataV2,
-};
+use mpl_token_metadata::{instructions::CreateMetadataAccountV3CpiBuilder, types::DataV2};
 use solana_keccak_hasher as keccak;
 
 declare_id!("FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y");
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SUPPLY_CAP: u64 = 1_000_000_000_000_000;      // 1 B tokens × 10^6
+const SUPPLY_CAP: u64 = 1_000_000_000_000_000; // 1 B tokens × 10^6
+
 // Lucky-block reward: a claim's payout is base × 2^bonus_bits where bonus_bits
 // = floor(log2( (max_valid_hash) / hash_high )), capped at BONUS_CAP. The hash
 // itself is the entropy source — no oracles, no extra accounts. EV per claim
@@ -24,20 +22,22 @@ const SUPPLY_CAP: u64 = 1_000_000_000_000_000;      // 1 B tokens × 10^6
 //   12.5% → 13.6 TERM
 //   ...
 //   0.39% → 870 TERM     (jackpot)
-const INITIAL_BASE_REWARD: u64 = 3_400_000;          // 3.4 TERM base, 5x EV → 17 TERM expected/claim
-const BONUS_CAP: u32 = 8;                            // max bonus bits → max payout = 256× base
-const EPOCH_SECONDS: i64 = 5 * 31_557_600;           // 5 × 365.25-day years in seconds
-const MAX_EPOCHS: u32 = 10;                           // 50-year programme (10 epochs × 5 yrs)
+const INITIAL_BASE_REWARD: u64 = 3_400_000; // 3.4 TERM base, 5x EV → 17 TERM expected/claim
+const BONUS_CAP: u32 = 8; // max bonus bits → max payout = 256× base
+const EPOCH_SECONDS: i64 = 5 * 31_557_600; // 5 × 365.25-day years in seconds
+const MAX_EPOCHS: u32 = 10; // 50-year programme (10 epochs × 5 yrs)
 
 // ─── Team vesting tranches ────────────────────────────────────────────────────
 // 4 discrete unlocks; total = 100M TERM (10% of supply cap).
 // Tokens are reserved against total_minted at initialize_vesting time.
+#[rustfmt::skip]
 const TRANCHE_AMOUNTS: [u64; 4] = [
     50_000_000_000_000,  // 50M TERM =  5.0% — unlocks at launch
     25_000_000_000_000,  // 25M TERM =  2.5% — unlocks at year 5
     15_000_000_000_000,  // 15M TERM =  1.5% — unlocks at year 7
     10_000_000_000_000,  // 10M TERM =  1.0% — unlocks at year 10
 ];
+#[rustfmt::skip]
 const TRANCHE_UNLOCK_SECONDS: [i64; 4] = [
     0,                       // launch (cliff — fully claimable immediately)
     EPOCH_SECONDS,           // year 5  (start of linear vest)
@@ -47,6 +47,7 @@ const TRANCHE_UNLOCK_SECONDS: [i64; 4] = [
 // Linear vesting period AFTER each tranche's unlock time. Tranche 0 has zero
 // linear period (immediate cliff), the rest vest smoothly over 1 year to avoid
 // market shock from sudden full-amount unlocks.
+#[rustfmt::skip]
 const TRANCHE_LINEAR_PERIODS: [i64; 4] = [
     0,                       // immediate
     31_557_600,              // 1 year linear after year 5
@@ -55,19 +56,19 @@ const TRANCHE_LINEAR_PERIODS: [i64; 4] = [
 ];
 // Dynamic burn: scales with network heat. Anchored on log2(difficulty) so the
 // curve responds smoothly to exponential difficulty growth. See burn_bps_for().
-const BURN_BPS_MIN: u64 = 25;                         // 0.25% at low difficulty (network cold)
-const BURN_BPS_MAX: u64 = 500;                        // 5%    at high difficulty (network hot)
-const BURN_DIFF_BITS_LOW: u32 = 8;                    // diff = 256 → BURN_BPS_MIN
-const BURN_DIFF_BITS_HIGH: u32 = 24;                  // diff = 16M → BURN_BPS_MAX
-const TREASURY_BPS: u64 = 300;                        // 3%   — meaningful staker yield (was 0.5%)
+const BURN_BPS_MIN: u64 = 25; // 0.25% at low difficulty (network cold)
+const BURN_BPS_MAX: u64 = 500; // 5%    at high difficulty (network hot)
+const BURN_DIFF_BITS_LOW: u32 = 8; // diff = 256 → BURN_BPS_MIN
+const BURN_DIFF_BITS_HIGH: u32 = 24; // diff = 16M → BURN_BPS_MAX
+const TREASURY_BPS: u64 = 300; // 3%   — meaningful staker yield (was 0.5%)
 const BPS_DENOM: u64 = 10_000;
-const YIELD_PRECISION: u128 = 1_000_000_000_000;     // 1e12 fixed-point
+const YIELD_PRECISION: u128 = 1_000_000_000_000; // 1e12 fixed-point
 
 // Fixed per-claim fee added to staking treasury when stakers exist.
 // In late epochs when base_reward shrinks toward zero, this becomes the
 // dominant treasury source — providing a perpetual security budget that
 // doesn't depend on emissions.
-const CLAIM_FEE: u64 = 10_000;                        // 0.01 TERM
+const CLAIM_FEE: u64 = 10_000; // 0.01 TERM
 
 // ─── Anti-Sybil bond ──────────────────────────────────────────────────────────
 // Each miner must hold a per-wallet `BondAccount` PDA. Two payment options:
@@ -82,8 +83,8 @@ const CLAIM_FEE: u64 = 10_000;                        // 0.01 TERM
 //
 // Mutually exclusive — Anchor's `init` enforces one BondAccount per wallet.
 // Both refundable via the corresponding `withdraw_bond[_term]` after cooldown.
-const BOND_WITHDRAW_COOLDOWN: i64 = 3600;             // 1 hour after last claim
-const TERM_BOND_AMOUNT: u64 = 20_000_000;             // 20 TERM (with 6 decimals)
+const BOND_WITHDRAW_COOLDOWN: i64 = 3600; // 1 hour after last claim
+const TERM_BOND_AMOUNT: u64 = 20_000_000; // 20 TERM (with 6 decimals)
 const BOND_KIND_SOL: u8 = 0;
 const BOND_KIND_TERM: u8 = 1;
 
@@ -93,14 +94,14 @@ const BOND_KIND_TERM: u8 = 1;
 // of claims by reward distribution, forcing relayers to compete on cost
 // rather than capture upside on the rare jackpots. Constant (not governance-
 // settable) so authority can never coerce miners into paying more.
-const MAX_TIP_TERM: u64 = 5_000_000;                  // 5 TERM
+const MAX_TIP_TERM: u64 = 5_000_000; // 5 TERM
 
 // ─── Phase 2 activation ───────────────────────────────────────────────────────
 // At year 1, the authority-set rate limit becomes redundant: the bond plus
 // PoW already deter spam, and centralized rate limiting becomes a censorship
 // vector. The rate-limit field stays in state for compatibility but is
 // ignored once we cross this threshold.
-const PHASE2_ACTIVATION_SECS: i64 = 31_557_600;       // 1 year
+const PHASE2_ACTIVATION_SECS: i64 = 31_557_600; // 1 year
 
 // ─── Difficulty adjustment ────────────────────────────────────────────────────
 // Continuous target: a hash is valid if its first 8 bytes (interpreted as
@@ -114,11 +115,11 @@ const PHASE2_ACTIVATION_SECS: i64 = 31_557_600;       // 1 year
 // Triggers:
 //   • claims_in_window >= TARGET_CLAIMS (window filled)
 //   • elapsed >= TARGET_WINDOW (window timed out)
-const TARGET_WINDOW: i64 = 600;                           // 10 minutes
+const TARGET_WINDOW: i64 = 600; // 10 minutes
 const TARGET_CLAIMS_PER_WINDOW: u64 = 100;
-const MIN_DIFFICULTY: u64 = 16;                           // ~4 bits floor
-const MAX_DIFFICULTY: u64 = 1_099_511_627_776;            // 2^40 ceiling
-const INITIAL_DIFFICULTY: u64 = 4_096;                    // ~12 bits, matches old default
+const MIN_DIFFICULTY: u64 = 16; // ~4 bits floor
+const MAX_DIFFICULTY: u64 = 1_099_511_627_776; // 2^40 ceiling
+const INITIAL_DIFFICULTY: u64 = 4_096; // ~12 bits, matches old default
 
 // ─── Program ─────────────────────────────────────────────────────────────────
 
@@ -162,16 +163,16 @@ pub mod terminuscoin {
         pool.total_staked = 0;
         pool.reward_per_token_stored = 0;
         pool.treasury_balance = 0;
-        msg!("Stake pool ready. Vault: {}", ctx.accounts.stake_vault.key());
+        msg!(
+            "Stake pool ready. Vault: {}",
+            ctx.accounts.stake_vault.key()
+        );
         Ok(())
     }
 
     // ── initialize_vesting ────────────────────────────────────────────────────
 
-    pub fn initialize_vesting(
-        ctx: Context<InitializeVesting>,
-        team_wallet: Pubkey,
-    ) -> Result<()> {
+    pub fn initialize_vesting(ctx: Context<InitializeVesting>, team_wallet: Pubkey) -> Result<()> {
         let total: u64 = TRANCHE_AMOUNTS.iter().sum();
         require!(
             ctx.accounts.global_state.total_minted.saturating_add(total) <= SUPPLY_CAP,
@@ -237,7 +238,9 @@ pub mod terminuscoin {
         );
 
         // ── Emission schedule ─────────────────────────────────────────────────
-        let elapsed = current_time.saturating_sub(ctx.accounts.global_state.launch_time).max(0);
+        let elapsed = current_time
+            .saturating_sub(ctx.accounts.global_state.launch_time)
+            .max(0);
         let epoch = ((elapsed / EPOCH_SECONDS) as u32).min(MAX_EPOCHS - 1);
         let base_unscaled = INITIAL_BASE_REWARD >> epoch;
         let (base_reward, bonus_bits) = lucky_reward(
@@ -248,7 +251,7 @@ pub mod terminuscoin {
 
         // ── Reward split ──────────────────────────────────────────────────────
         let burn_bps = burn_bps_for(ctx.accounts.global_state.difficulty);
-        let burn_amount     = base_reward * burn_bps / BPS_DENOM;
+        let burn_amount = base_reward * burn_bps / BPS_DENOM;
         let treasury_amount = base_reward * TREASURY_BPS / BPS_DENOM;
         let net_reward = base_reward
             .saturating_sub(burn_amount)
@@ -272,7 +275,11 @@ pub mod terminuscoin {
         };
         let to_commit = net_reward.saturating_add(treasury_committed);
         require!(
-            ctx.accounts.global_state.total_minted.saturating_add(to_commit) <= SUPPLY_CAP,
+            ctx.accounts
+                .global_state
+                .total_minted
+                .saturating_add(to_commit)
+                <= SUPPLY_CAP,
             ErrorCode::SupplyCapReached
         );
 
@@ -289,13 +296,14 @@ pub mod terminuscoin {
             s.last_hash = hash_result.0;
 
             let window_elapsed = current_time.saturating_sub(s.last_claim_window);
-            let window_full    = s.claims_in_window >= TARGET_CLAIMS_PER_WINDOW;
+            let window_full = s.claims_in_window >= TARGET_CLAIMS_PER_WINDOW;
             let window_expired = window_elapsed >= TARGET_WINDOW;
 
             if window_full || window_expired {
                 let old_diff = s.difficulty;
                 // Continuous adjustment: factor = (claims * TARGET_WINDOW) / (TARGET_CLAIMS * actual_window)
-                let denom = (TARGET_CLAIMS_PER_WINDOW as u128).saturating_mul(window_elapsed.max(1) as u128);
+                let denom = (TARGET_CLAIMS_PER_WINDOW as u128)
+                    .saturating_mul(window_elapsed.max(1) as u128);
                 let numer = (old_diff as u128)
                     .saturating_mul(s.claims_in_window as u128)
                     .saturating_mul(TARGET_WINDOW as u128);
@@ -310,8 +318,13 @@ pub mod terminuscoin {
                     claims_in_window: s.claims_in_window,
                     window_seconds: window_elapsed,
                 });
-                msg!("Diff {} → {} | claims={} window={}s",
-                    old_diff, new_diff, s.claims_in_window, window_elapsed);
+                msg!(
+                    "Diff {} → {} | claims={} window={}s",
+                    old_diff,
+                    new_diff,
+                    s.claims_in_window,
+                    window_elapsed
+                );
                 s.difficulty = new_diff;
                 s.claims_in_window = 0;
                 s.last_claim_window = current_time;
@@ -421,8 +434,11 @@ pub mod terminuscoin {
             let user = &ctx.accounts.user_stake_account;
             pending_yield(pool.reward_per_token_stored, user.reward_debt, user.amount)
         };
-        ctx.accounts.user_stake_account.pending_yield =
-            ctx.accounts.user_stake_account.pending_yield.saturating_add(pending);
+        ctx.accounts.user_stake_account.pending_yield = ctx
+            .accounts
+            .user_stake_account
+            .pending_yield
+            .saturating_add(pending);
 
         // Transfer user tokens → vault
         token::transfer(
@@ -450,7 +466,11 @@ pub mod terminuscoin {
             amount,
             total_staked: ctx.accounts.stake_pool.total_staked,
         });
-        msg!("Staked {} TERM. Pool total: {}", amount, ctx.accounts.stake_pool.total_staked);
+        msg!(
+            "Staked {} TERM. Pool total: {}",
+            amount,
+            ctx.accounts.stake_pool.total_staked
+        );
         Ok(())
     }
 
@@ -458,7 +478,10 @@ pub mod terminuscoin {
 
     pub fn unstake(ctx: Context<Unstake>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
-        require!(ctx.accounts.user_stake_account.amount >= amount, ErrorCode::InsufficientStake);
+        require!(
+            ctx.accounts.user_stake_account.amount >= amount,
+            ErrorCode::InsufficientStake
+        );
 
         // Settle pending yield
         let pending = {
@@ -466,8 +489,11 @@ pub mod terminuscoin {
             let user = &ctx.accounts.user_stake_account;
             pending_yield(pool.reward_per_token_stored, user.reward_debt, user.amount)
         };
-        ctx.accounts.user_stake_account.pending_yield =
-            ctx.accounts.user_stake_account.pending_yield.saturating_add(pending);
+        ctx.accounts.user_stake_account.pending_yield = ctx
+            .accounts
+            .user_stake_account
+            .pending_yield
+            .saturating_add(pending);
 
         // Transfer vault → user (stake_pool PDA signs for vault)
         let bump = ctx.bumps.stake_pool;
@@ -496,7 +522,11 @@ pub mod terminuscoin {
             amount,
             total_staked: ctx.accounts.stake_pool.total_staked,
         });
-        msg!("Unstaked {} TERM. Pool total: {}", amount, ctx.accounts.stake_pool.total_staked);
+        msg!(
+            "Unstaked {} TERM. Pool total: {}",
+            amount,
+            ctx.accounts.stake_pool.total_staked
+        );
         Ok(())
     }
 
@@ -515,14 +545,24 @@ pub mod terminuscoin {
             let user = &ctx.accounts.user_stake_account;
             pending_yield(pool.reward_per_token_stored, user.reward_debt, user.amount)
         };
-        let total = ctx.accounts.user_stake_account.pending_yield.saturating_add(accrued);
+        let total = ctx
+            .accounts
+            .user_stake_account
+            .pending_yield
+            .saturating_add(accrued);
         require!(total > 0, ErrorCode::NoYieldAvailable);
         // treasury_balance is the authoritative limit — supply cap was reserved
         // against total_minted when these tokens were accrued in claim().
-        require!(ctx.accounts.stake_pool.treasury_balance >= total, ErrorCode::InsufficientTreasury);
+        require!(
+            ctx.accounts.stake_pool.treasury_balance >= total,
+            ErrorCode::InsufficientTreasury
+        );
 
-        ctx.accounts.stake_pool.treasury_balance =
-            ctx.accounts.stake_pool.treasury_balance.saturating_sub(total);
+        ctx.accounts.stake_pool.treasury_balance = ctx
+            .accounts
+            .stake_pool
+            .treasury_balance
+            .saturating_sub(total);
         let rpts = ctx.accounts.stake_pool.reward_per_token_stored;
         let user = &mut ctx.accounts.user_stake_account;
         user.pending_yield = 0;
@@ -554,7 +594,8 @@ pub mod terminuscoin {
 
     pub fn claim_team_vest(ctx: Context<ClaimTeamVest>) -> Result<()> {
         let clock = Clock::get()?;
-        let elapsed = clock.unix_timestamp
+        let elapsed = clock
+            .unix_timestamp
             .saturating_sub(ctx.accounts.team_vest_state.start_time)
             .max(0);
 
@@ -597,7 +638,12 @@ pub mod terminuscoin {
             amount: claimable,
             total_claimed,
         });
-        msg!("Team vest: {} TERM claimed ({}/{})", claimable, total_claimed, total_allocation);
+        msg!(
+            "Team vest: {} TERM claimed ({}/{})",
+            claimable,
+            total_claimed,
+            total_allocation
+        );
         Ok(())
     }
 
@@ -625,12 +671,30 @@ pub mod terminuscoin {
 
         msg!("=== TEAM VESTING STATUS ===");
         msg!("Beneficiary    : {}", v.team_wallet);
-        msg!("Total alloc    : {}.{:06} TERM", total_allocation / 1_000_000, total_allocation % 1_000_000);
-        msg!("Total claimed  : {}.{:06} TERM", total_claimed / 1_000_000, total_claimed % 1_000_000);
-        msg!("Total claimable: {}.{:06} TERM", total_claimable / 1_000_000, total_claimable % 1_000_000);
+        msg!(
+            "Total alloc    : {}.{:06} TERM",
+            total_allocation / 1_000_000,
+            total_allocation % 1_000_000
+        );
+        msg!(
+            "Total claimed  : {}.{:06} TERM",
+            total_claimed / 1_000_000,
+            total_claimed % 1_000_000
+        );
+        msg!(
+            "Total claimable: {}.{:06} TERM",
+            total_claimable / 1_000_000,
+            total_claimable % 1_000_000
+        );
         for i in 0..4usize {
-            msg!("Tranche {}  alloc={} vested={} claimed={} unlocked={}",
-                i, TRANCHE_AMOUNTS[i], tranche_vested_arr[i], v.claimed[i], tranche_unlocked[i]);
+            msg!(
+                "Tranche {}  alloc={} vested={} claimed={} unlocked={}",
+                i,
+                TRANCHE_AMOUNTS[i],
+                tranche_vested_arr[i],
+                v.claimed[i],
+                tranche_unlocked[i]
+            );
         }
 
         Ok(TeamVestStatus {
@@ -659,7 +723,10 @@ pub mod terminuscoin {
 
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> {
         let s = &mut ctx.accounts.global_state;
-        require!(s.pending_authority != Pubkey::default(), ErrorCode::NoPendingTransfer);
+        require!(
+            s.pending_authority != Pubkey::default(),
+            ErrorCode::NoPendingTransfer
+        );
         s.authority = s.pending_authority;
         s.pending_authority = Pubkey::default();
         msg!("Authority transfer accepted by {}", s.authority);
@@ -679,16 +746,25 @@ pub mod terminuscoin {
         new_freeze_authority: Pubkey,
     ) -> Result<()> {
         ctx.accounts.global_state.pending_freeze_authority = new_freeze_authority;
-        msg!("Freeze authority transfer proposed → {}", new_freeze_authority);
+        msg!(
+            "Freeze authority transfer proposed → {}",
+            new_freeze_authority
+        );
         Ok(())
     }
 
     pub fn accept_freeze_authority(ctx: Context<AcceptFreezeAuthority>) -> Result<()> {
         let s = &mut ctx.accounts.global_state;
-        require!(s.pending_freeze_authority != Pubkey::default(), ErrorCode::NoPendingTransfer);
+        require!(
+            s.pending_freeze_authority != Pubkey::default(),
+            ErrorCode::NoPendingTransfer
+        );
         s.freeze_authority = s.pending_freeze_authority;
         s.pending_freeze_authority = Pubkey::default();
-        msg!("Freeze authority transfer accepted by {}", s.freeze_authority);
+        msg!(
+            "Freeze authority transfer accepted by {}",
+            s.freeze_authority
+        );
         Ok(())
     }
 
@@ -864,7 +940,10 @@ pub mod terminuscoin {
     // miner can use `deposit_bond_term`.
 
     pub fn initialize_bond_vault(ctx: Context<InitializeBondVault>) -> Result<()> {
-        msg!("TERM bond vault initialised: {}", ctx.accounts.bond_term_vault.key());
+        msg!(
+            "TERM bond vault initialised: {}",
+            ctx.accounts.bond_term_vault.key()
+        );
         Ok(())
     }
 
@@ -908,12 +987,13 @@ pub mod terminuscoin {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn meets_difficulty(hash: &[u8; 32], difficulty: u64) -> bool {
-    if difficulty <= 1 { return true; }
+    if difficulty <= 1 {
+        return true;
+    }
     // Take first 8 bytes of the hash as a big-endian u64 and require it
     // to be <= u64::MAX / difficulty (probability ≈ 1 / difficulty).
     let hash_high = u64::from_be_bytes([
-        hash[0], hash[1], hash[2], hash[3],
-        hash[4], hash[5], hash[6], hash[7],
+        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
     ]);
     hash_high <= u64::MAX / difficulty
 }
@@ -927,16 +1007,19 @@ fn meets_difficulty(hash: &[u8; 32], difficulty: u64) -> bool {
 /// strategies — and `last_hash` rotation makes "submit immediately" the
 /// dominant strategy regardless.
 fn lucky_reward(base: u64, hash: &[u8; 32], difficulty: u64) -> (u64, u32) {
-    if base == 0 || difficulty <= 1 { return (base, 0); }
+    if base == 0 || difficulty <= 1 {
+        return (base, 0);
+    }
 
     let hash_high = u64::from_be_bytes([
-        hash[0], hash[1], hash[2], hash[3],
-        hash[4], hash[5], hash[6], hash[7],
+        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
     ]);
     let max_valid = u64::MAX / difficulty;
 
     // Defensive: caller should have already verified meets_difficulty.
-    if hash_high > max_valid { return (base, 0); }
+    if hash_high > max_valid {
+        return (base, 0);
+    }
 
     // hash_high == 0 → astronomically lucky (1 in 2^64). Give max bonus.
     if hash_high == 0 {
@@ -946,7 +1029,9 @@ fn lucky_reward(base: u64, hash: &[u8; 32], difficulty: u64) -> (u64, u32) {
     // ratio = how many times "luckier" than threshold.
     // bonus_bits = floor(log2(ratio)), clamped to BONUS_CAP.
     let ratio = max_valid / hash_high;
-    if ratio == 0 { return (base, 0); }
+    if ratio == 0 {
+        return (base, 0);
+    }
     let bonus_bits = (63 - ratio.leading_zeros()).min(BONUS_CAP);
     (base.saturating_mul(1u64 << bonus_bits), bonus_bits)
 }
@@ -957,9 +1042,13 @@ fn lucky_reward(base: u64, hash: &[u8; 32], difficulty: u64) -> (u64, u32) {
 fn tranche_vested(i: usize, elapsed: i64) -> u64 {
     let unlock = TRANCHE_UNLOCK_SECONDS[i];
     let total = TRANCHE_AMOUNTS[i];
-    if elapsed < unlock { return 0; }
+    if elapsed < unlock {
+        return 0;
+    }
     let period = TRANCHE_LINEAR_PERIODS[i];
-    if period == 0 { return total; }
+    if period == 0 {
+        return total;
+    }
     let since_unlock = (elapsed - unlock).min(period);
     ((total as u128) * (since_unlock as u128) / (period as u128)) as u64
 }
@@ -967,9 +1056,17 @@ fn tranche_vested(i: usize, elapsed: i64) -> u64 {
 /// Linearly interpolate burn rate between BURN_BPS_MIN and BURN_BPS_MAX
 /// based on log2(difficulty). Below BITS_LOW → MIN; above BITS_HIGH → MAX.
 fn burn_bps_for(difficulty: u64) -> u64 {
-    let bits = if difficulty == 0 { 0 } else { 63 - difficulty.leading_zeros() };
-    if bits <= BURN_DIFF_BITS_LOW { return BURN_BPS_MIN; }
-    if bits >= BURN_DIFF_BITS_HIGH { return BURN_BPS_MAX; }
+    let bits = if difficulty == 0 {
+        0
+    } else {
+        63 - difficulty.leading_zeros()
+    };
+    if bits <= BURN_DIFF_BITS_LOW {
+        return BURN_BPS_MIN;
+    }
+    if bits >= BURN_DIFF_BITS_HIGH {
+        return BURN_BPS_MAX;
+    }
     let progress = (bits - BURN_DIFF_BITS_LOW) as u64;
     let span = (BURN_DIFF_BITS_HIGH - BURN_DIFF_BITS_LOW) as u64;
     BURN_BPS_MIN + (BURN_BPS_MAX - BURN_BPS_MIN) * progress / span
@@ -987,28 +1084,28 @@ fn pending_yield(reward_per_token_stored: u128, reward_debt: u128, amount: u64) 
 #[account]
 #[derive(Default)]
 pub struct GlobalState {
-    pub authority: Pubkey,                 // 32
-    pub freeze_authority: Pubkey,          // 32
-    pub pending_authority: Pubkey,         // 32 — two-step transfer
-    pub pending_freeze_authority: Pubkey,  // 32 — two-step transfer
-    pub paused: bool,                      // 1
-    pub difficulty: u64,                   // 8  — continuous target multiplier
-    pub launch_time: i64,                  // 8
-    pub last_claim_window: i64,            // 8
-    pub total_claims: u64,                 // 8
-    pub claims_in_window: u64,             // 8
-    pub total_minted: u64,                 // 8
-    pub rate_limit_seconds: i64,           // 8
-    pub last_hash: [u8; 32],               // 32
+    pub authority: Pubkey,                // 32
+    pub freeze_authority: Pubkey,         // 32
+    pub pending_authority: Pubkey,        // 32 — two-step transfer
+    pub pending_freeze_authority: Pubkey, // 32 — two-step transfer
+    pub paused: bool,                     // 1
+    pub difficulty: u64,                  // 8  — continuous target multiplier
+    pub launch_time: i64,                 // 8
+    pub last_claim_window: i64,           // 8
+    pub total_claims: u64,                // 8
+    pub claims_in_window: u64,            // 8
+    pub total_minted: u64,                // 8
+    pub rate_limit_seconds: i64,          // 8
+    pub last_hash: [u8; 32],              // 32
 }
 // borsh total: 217 bytes → fits within space = 8 + 256
 
 #[account]
 #[derive(Default)]
 pub struct StakePool {
-    pub total_staked: u64,              // 8
-    pub reward_per_token_stored: u128,  // 16
-    pub treasury_balance: u64,          // 8
+    pub total_staked: u64,             // 8
+    pub reward_per_token_stored: u128, // 16
+    pub treasury_balance: u64,         // 8
 }
 // borsh total: 32 bytes → space = 8 + 64
 
@@ -1043,9 +1140,9 @@ pub struct BondAccount {
 #[account]
 #[derive(Default)]
 pub struct TeamVestState {
-    pub team_wallet: Pubkey,    // 32
-    pub start_time: i64,        // 8
-    pub claimed: [u64; 4],      // 32 — per-tranche claimed amounts
+    pub team_wallet: Pubkey, // 32
+    pub start_time: i64,     // 8
+    pub claimed: [u64; 4],   // 32 — per-tranche claimed amounts
 }
 // borsh total: 72 bytes → space = 8 + 80
 
@@ -1060,8 +1157,8 @@ pub struct TeamVestStatus {
     pub elapsed_seconds: i64,
     pub tranche_amounts: [u64; 4],
     pub tranche_claimed: [u64; 4],
-    pub tranche_unlocked: [bool; 4],   // unlock time has passed
-    pub tranche_vested: [u64; 4],      // amount vested so far (linear curve)
+    pub tranche_unlocked: [bool; 4], // unlock time has passed
+    pub tranche_vested: [u64; 4],    // amount vested so far (linear curve)
 }
 
 // ─── Accounts structs ─────────────────────────────────────────────────────────
@@ -1394,7 +1491,6 @@ pub struct GetTeamVestStatus<'info> {
     pub team_vest_state: Account<'info, TeamVestState>,
 }
 
-
 #[derive(Accounts)]
 pub struct SetFreeze<'info> {
     #[account(
@@ -1670,7 +1766,7 @@ pub struct CreateMetadata<'info> {
 pub struct ClaimMined {
     pub miner: Pubkey,
     pub nonce: u64,
-    pub bonus_bits: u32,         // 0..=BONUS_CAP — indexers filter ≥4 to surface "jackpots"
+    pub bonus_bits: u32, // 0..=BONUS_CAP — indexers filter ≥4 to surface "jackpots"
     pub net_reward: u64,
     pub burn_amount: u64,
     pub treasury_committed: u64,
@@ -1697,8 +1793,8 @@ pub struct DifficultyAdjusted {
 #[event]
 pub struct BondDeposited {
     pub miner: Pubkey,
-    pub kind: u8,           // 0 = SOL, 1 = TERM
-    pub term_amount: u64,   // 0 unless kind = 1
+    pub kind: u8,         // 0 = SOL, 1 = TERM
+    pub term_amount: u64, // 0 unless kind = 1
 }
 
 #[event]

@@ -3,7 +3,7 @@ import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@sol
 import { Redis } from "@upstash/redis";
 
 const TOPUP_LAMPORTS = 7_500_000;         // 0.0075 SOL — covers setup + ~12h of 24/7 mining
-const RECIPIENT_BALANCE_CAP = 8_000_000;  // refuse to top up if recipient already has more
+const RECIPIENT_BALANCE_CAP = 7_000_000;  // skip topup if recipient already has this much; keep < TOPUP_LAMPORTS (7.5M) so a just-granted wallet is caught
 
 // Quotas (env overrides). Defaults are conservative — see RELAYER_OPERATOR.md.
 const MAX_TOPUPS_PER_WALLET     = parseInt(process.env.MAX_TOPUPS_PER_WALLET     ?? "1");

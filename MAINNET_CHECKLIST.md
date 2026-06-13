@@ -270,14 +270,43 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 ## 7. miner-ui hosting
 
 - [ ] Production build deployed to Vercel/Netlify/Cloudflare Pages
-- [ ] `VITE_RPC_URL` points to a private RPC (Helius/QuickNode/Triton — public mainnet RPC is rate-limited)
+- [ ] **`VITE_RPC_URL` (frontend) → private RPC** — see the runbook below. The public RPC is rate-limited per-IP and 429s a sustained miner.
+- [ ] **`RPC_URL` (relayer) → private RPC** — a *separate* key from the frontend's. See the runbook below.
 - [ ] Custom domain wired up
+
+### Private RPC setup (runbook — proven on devnet 2026-06-12)
+
+Both the miner UI and the relayer hit Solana RPC, and the **public RPC is rate-limited per-IP** — it 429s a sustained miner (a 30-request burst from a cold IP already lost ~30% to 429s). Two env vars, **two separate keys**:
+
+| Env var | Used by | Vercel scope | Key restriction |
+|---|---|---|---|
+| `VITE_RPC_URL` | frontend (browser miner) | **Build** (Vite inlines it at build time) | **domain-locked** to the site domain |
+| `RPC_URL` | relayer fns (`api/relay`, `topup`, `relayer-info`) | **Runtime** | **unrestricted** (server-side) |
+
+Provider: Helius / Triton / QuickNode (free devnet tiers; paid mainnet tiers). URL form: `https://mainnet.helius-rpc.com/?api-key=<KEY>`.
+
+1. Create **two** keys — one frontend, one relayer.
+2. **Frontend key → domain-lock** it to the production domain(s) (Helius: the key → *Allowed Domains*). The frontend key ships in the public JS bundle, so the lock makes a scraped key useless off your domain.
+3. **Relayer key → leave unrestricted.** The relayer makes server-side requests with **no `Origin` header**, so a domain-locked key would *block* it (`/api/relayer-info` → 500). ⚠️ Never reuse the domain-locked frontend key for `RPC_URL`.
+4. Vercel → Settings → Environment Variables: set `VITE_RPC_URL` (frontend URL, Production scope) and `RPC_URL` (relayer URL).
+5. **Redeploy.** `VITE_RPC_URL` is **build-time** — an env edit alone does nothing until a new build bakes it in. (`resolveRpcUrl()` is fail-loud, so a prod build with it unset white-screens rather than silently shipping the public-RPC fallback.)
+
+**Verify (no auth needed):**
+- Frontend — fetch the live `index-*.js` and grep for your RPC host (e.g. `helius-rpc.com`): confirms it's off the public RPC, and the bundle hash changing confirms the rebuild landed.
+- Relayer — `curl https://<domain>/api/relayer-info` → `HTTP 200` with a `balance` (a successful server-side `getBalance` proves `RPC_URL` works and isn't domain-blocked).
+
+**⚠️ Hardening — domain-lock the public-facing (frontend) key:** `VITE_RPC_URL`'s key is baked into the public JS bundle, so anyone can read it. **Set an Allowed-Domains restriction on the frontend key** (Helius: the key → *Allowed Domains* → your site domain(s)) so a scraped key only works from your origin. Do this **now — devnet included, if not already set**; it's free, and because the relayer uses a *separate* unrestricted key it won't break server-side calls. Re-check after any frontend-key rotation.
+
+**Sizing:** RPC read-load grows ~linearly with concurrent miners (each polls chain state + broadcasts). Free tiers cover devnet / light load; **budget a paid tier for mainnet** and watch the provider's usage dashboard after launch.
+
+**Devnet reference (2026-06-12):** done + verified live — `VITE_RPC_URL` + `RPC_URL` set to two separate Helius devnet keys; bundle confirmed on `devnet.helius-rpc.com`, `/api/relayer-info` 200. Remaining hardening on this devnet setup: confirm the **frontend** key has its Allowed-Domains set (see ⚠️ above) if not already — the relayer key stays unrestricted. Mainnet is the same with mainnet URLs.
 
 ### UX / onboarding (new-user friendliness)
 
 - [x] **In-UI FAQ** explaining every option in plain language: routing modes (AUTO / SELF-FUND / SHARED / LOCAL), the RELAYERS panel (relayer list, ● ready / ○ down, ★ auto / 📌 pin, add-relayer URL), claim tips (the floor + presets), burner vs Phantom wallets, and the anti-Sybil bond. New crypto users need this in-context, not buried in external docs.
 - [x] **One-click start for newcomers** — opening the page and pressing **Start mining** should Just Work with everything on AUTO: auto-generate a burner when no wallet is connected, keep `modePreference = AUTO`, and route automatically (relayer for a 0-SOL burner). Goal: zero config and zero crypto knowledge required to begin mining.
 - [ ] **Load distribution across ≥2 production relayers** (deferred; not testable until a second production relayer exists). Relayer selection is currently deterministic *prefer-home* — cheapest-feasible, near-ties broken toward the bundled/same-origin relayer; the randomized weighting in `selectCheapest` was removed as dead code. When a second relayer is real, design a ranking signal (health / least-loaded / reputation) and implement it as a STABLE per-probe choice held in state — **never a render-time `Math.random`** (selection runs in App's render body, so random there re-rolls the relayer on every re-render).
+- [ ] **Cached chain-state endpoint (RPC cost lever)** (deferred) — every miner independently fetches GlobalState (difficulty + `last_hash`) each round, so RPC read-load scales linearly with concurrent miners. Serve a short-cached GlobalState (~1–2s TTL — the stale-nonce retry already tolerates brief staleness) from the relayer so chain-state reads become ~constant regardless of miner count. The single biggest RPC-bill lever at scale.
 
 ---
 

@@ -6,7 +6,7 @@ import { useMiner } from "./useMiner";
 import ClaimReveal from "./ClaimReveal";
 import HelpTab from "./HelpTab";
 import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
-import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, type RelayerStatus } from "./relayers";
+import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, hasQuota, type RelayerStatus } from "./relayers";
 import {
   BrowserKeypairWallet,
   BURNER_STORAGE_KEY,
@@ -142,13 +142,31 @@ export default function App() {
   // Bump to force an immediate re-probe (after adding/removing a custom relayer).
   const [relayerListVersion, setRelayerListVersion] = useState(0);
   const [addRelayerInput, setAddRelayerInput] = useState("");
+  // Consecutive probe cycles with no usable relayer AND an unknown (thrown)
+  // probe — bounds how long a SOL-less burner waits in `loading` on a transient
+  // outage before we give up and surface the (manual-fund) needs-topup UI.
+  const probeFailStreak = useRef(0);
   useEffect(() => {
     let cancelled = false;
     const probe = async () => {
       try {
         const descs = await loadRelayers();
         const statuses = await probeAll(descs, activeWallet.publicKey ?? undefined);
-        if (!cancelled) { setRelayerStatuses(statuses); setSharedProbed(true); }
+        if (cancelled) return;
+        setRelayerStatuses(statuses);
+        // Flip sharedProbed (stop holding the burner in `loading`) once the
+        // landscape is KNOWN: some relayer is usable, or every probe returned a
+        // definitive answer (none threw). If nothing's usable yet but a probe
+        // failed transiently, keep waiting — it might recover — up to a few
+        // cycles so a persistent outage still resolves to actionable UI.
+        const anyUsable  = statuses.some((s) => s.reachable && !!s.info?.pubkey);
+        const anyUnknown = statuses.some((s) => s.unknown);
+        if (anyUsable || !anyUnknown) {
+          probeFailStreak.current = 0;
+          setSharedProbed(true);
+        } else if ((probeFailStreak.current += 1) >= 3) {
+          setSharedProbed(true);
+        }
       } catch { /* keep last statuses; the 30s interval retries */ }
     };
     probe();
@@ -219,6 +237,14 @@ export default function App() {
   // only meaningful in burner-mode setups.
   const sharedAvailable = !!shared && !!activeWallet.publicKey;
   const localAvailable  = !shared && isBurner && !!relayer.publicKey;
+  // Topup source — a relayer that can FUND a burner. A topup is just a SOL
+  // transfer, so it only needs reachable + pubkey + daily headroom, NOT a
+  // feasible tip floor (unlike claim routing via `shared`). This lets a 0-SOL
+  // burner get funded even when every relayer's floor exceeds the base-block
+  // reward (which empties `shared` and would otherwise dead-end Start). Bundled
+  // (same-origin) is first in merge order, so it's preferred when reachable.
+  const topupRelayer = relayerStatuses.find((s) => s.reachable && !!s.info?.pubkey && hasQuota(s)) ?? null;
+  const topupViaShared = !!topupRelayer && isBurner && !!burner.publicKey;
 
   // Routing preference — self-fund FIRST when the wallet can pay its own
   // way. Each self-funded claim costs ~5K lamports; through a relayer it
@@ -334,8 +360,8 @@ export default function App() {
     }
     try {
       // Only reaches here in self-fund modes — burner actually needs the SOL.
-      if (sharedAvailable) {
-        await sharedTopUp(burner.publicKey, selectedRelayer?.desc.baseUrl ?? "");
+      if (topupRelayer) {
+        await sharedTopUp(burner.publicKey, topupRelayer.desc.baseUrl);
       } else if (localAvailable) {
         await relayer.topUp(connection, burner.publicKey, BURNER_TOPUP_LAMPORTS);
       } else {
@@ -468,8 +494,8 @@ export default function App() {
   async function handleTopUpBurner() {
     if (!burner.publicKey) return;
     try {
-      if (sharedAvailable) {
-        const res = await sharedTopUp(burner.publicKey, selectedRelayer?.desc.baseUrl ?? "");
+      if (topupRelayer) {
+        const res = await sharedTopUp(burner.publicKey, topupRelayer.desc.baseUrl);
         const detail = res.skipped ? "(already funded)" : `tx: ${res.signature?.slice(0, 16)}…`;
         alert(`Shared-relayer top-up: ${detail}`);
       } else if (localAvailable && connection) {
@@ -714,12 +740,10 @@ export default function App() {
           {relayerStatuses.map((s) => {
             const sel = selectedRelayer?.desc.baseUrl === s.desc.baseUrl;
             const floor = s.info?.minTipTerm ?? 0;
-            const ready = s.reachable
-              && floor <= tipCeil
-              && (s.info?.dailyRemaining === undefined || s.info.dailyRemaining > 0);
+            const ready = s.reachable && !!s.info?.pubkey && floor <= tipCeil && hasQuota(s);
             const state = !s.reachable ? "○ down"
               : floor > tipCeil ? "⚠ floor too high"
-              : (s.info?.dailyRemaining !== undefined && s.info.dailyRemaining <= 0) ? "⚠ no quota"
+              : !hasQuota(s) ? "⚠ no quota"
               : "● ready";
             const name = s.desc.name ?? (s.desc.baseUrl === "" ? "same-origin" : s.desc.baseUrl.replace(/^https:\/\//, ""));
             const isPinned = pinnedRelayer === s.desc.baseUrl;
@@ -815,7 +839,7 @@ export default function App() {
             {(miningMode === "self-fund-ready" || miningMode === "self-fund-needs-topup") && isBurner && (
               <span className="wallet-address">
                 burner {burnerBalance !== null ? `${(burnerBalance / 1e9).toFixed(4)} SOL` : "…"}
-                {miningMode === "self-fund-needs-topup" && burner.publicKey && (sharedAvailable || localAvailable) && (
+                {miningMode === "self-fund-needs-topup" && burner.publicKey && (topupViaShared || localAvailable) && (
                   <> · <button className="btn" onClick={handleTopUpBurner} style={{ marginLeft: 4 }}>[ TOP UP BURNER ]</button></>
                 )}
               </span>

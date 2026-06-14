@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { Connection, Keypair, PublicKey, SendTransactionError, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { Redis } from "@upstash/redis";
 import { waitUntil } from "@vercel/functions";
 import { createHash } from "node:crypto";
@@ -142,6 +142,18 @@ function deprecationInfo(): { sunsetDate: string; daysRemaining: number; message
       ? `Bootstrap relayer ending in ${daysRemaining} day${daysRemaining === 1 ? "" : "s"}. After that you'll need to self-fund or use a community relayer.`
       : "Bootstrap relayer has ended. Switch to self-fund or use a community relayer.",
   };
+}
+
+// A preflight failure is only the CLIENT's doomed tx when the PROGRAM actually
+// ran and rejected it (custom program error / InstructionError in the sim logs).
+// Transient/infra failures — blockhash not found, node behind, send errors —
+// throw too but carry no program logs; those must surface as 5xx (retryable +
+// visible to monitoring), NOT a 422 "would fail on-chain".
+function isDoomedTx(err: any): boolean {
+  const logs: string[] = Array.isArray(err?.logs) ? err.logs : [];
+  if (logs.length === 0) return false;
+  const hay = [String(err?.message ?? ""), ...logs].join("\n");
+  return /custom program error|Error processing Instruction|InstructionError|AnchorError|Program \S+ failed/i.test(hay);
 }
 
 /**
@@ -294,17 +306,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (kv && reservedCost > 0) {
         await kv.incrby(spendKey, -reservedCost);
       }
-      // A preflight rejection is the CLIENT's doomed tx, not a relayer fault.
-      // Report it as 422 with the program logs so monitoring doesn't see a 500
-      // and the UI can show the real reason — instead of a generic server error.
-      if (err instanceof SendTransactionError || Array.isArray(err?.logs)) {
+      // Only a genuine on-chain program rejection is the CLIENT's doomed tx —
+      // report it as 422 with the program logs (so the UI shows the real reason
+      // and monitoring doesn't see a 500). A transient RPC/infra failure
+      // (blockhash not found, node behind) is NOT doomed: re-throw → 500 so it's
+      // retried and stays visible to monitoring.
+      if (isDoomedTx(err)) {
         return res.status(422).json({
           error: "claim rejected at simulation — it would fail on-chain, so it was not broadcast",
           detail: typeof err?.message === "string" ? err.message : undefined,
           logs: err?.logs ?? null,
         });
       }
-      throw err; // genuine relayer/RPC fault → 500
+      throw err; // genuine or transient relayer/RPC fault → 500 (retryable, monitored)
     }
 
     // IP counter increments only on successful broadcast (preserves existing behavior).

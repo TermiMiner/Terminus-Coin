@@ -26,6 +26,12 @@ export interface RelayerDescriptor {
 export interface RelayerStatus {
   desc: RelayerDescriptor;
   reachable: boolean;
+  // True when the probe THREW (network / CORS / non-2xx) — availability is
+  // UNKNOWN (transient), as distinct from a definitive "not configured"
+  // (reachable:false, unknown:false). Preserves fetchSharedRelayerInfo's
+  // throw-vs-null contract so a SOL-less burner can wait instead of being
+  // pushed to a topup that would also fail.
+  unknown?: boolean;
   info?: SharedRelayerInfo;              // probed live fields (pubkey, minTipTerm, balance, …)
 }
 
@@ -121,8 +127,10 @@ export async function probeRelayer(
     const info = await fetchSharedRelayerInfo(walletPubkey, desc.baseUrl);
     return { desc, reachable: info !== null, info: info ?? undefined };
   } catch {
-    // network error / CORS / non-2xx → treat as down; selection routes around it.
-    return { desc, reachable: false };
+    // network error / CORS / non-2xx → availability UNKNOWN (transient), distinct
+    // from a clean null = "not configured". Selection still routes around it
+    // (reachable:false); `unknown` lets callers keep waiting vs giving up.
+    return { desc, reachable: false, unknown: true };
   }
 }
 
@@ -137,13 +145,23 @@ export function probeAll(
 
 export const floorOf = (s: RelayerStatus): number => s.info?.minTipTerm ?? 0;
 
+// A relayer needs enough daily headroom to actually service a claim. A near-zero
+// remaining budget passes a `> 0` test but then 429s at /api/relay, which
+// reserves up to ~5M lamports for a first claim — so the UI would show ● ready
+// for a relayer every claim bounces off of. Mirror that pre-check bound.
+export const MIN_DAILY_HEADROOM_LAMPORTS = 5_000_000;
+
+// Daily-budget headroom for at least one claim (or no KV quota advertised).
+export const hasQuota = (s: RelayerStatus): boolean =>
+  s.info?.dailyRemaining === undefined || s.info.dailyRemaining >= MIN_DAILY_HEADROOM_LAMPORTS;
+
 // Eligible = reachable, advertises a pubkey, has quota headroom, and its floor is
 // feasible against the current base-block net reward (tipCeilRaw from tipMath).
 export function eligibleRelayers(statuses: RelayerStatus[], tipCeilRaw: number): RelayerStatus[] {
   return statuses.filter((s) => {
     if (!s.reachable || !s.info?.pubkey) return false;
     if (floorOf(s) > tipCeilRaw) return false;                         // infeasible floor
-    if (s.info.dailyRemaining !== undefined && s.info.dailyRemaining <= 0) return false; // no quota
+    if (!hasQuota(s)) return false;                                     // no daily headroom
     return true;
   });
 }

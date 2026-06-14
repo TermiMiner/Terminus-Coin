@@ -168,9 +168,13 @@ jobs:
         working-directory: miner-ui
         run: npm ci --legacy-peer-deps
 
-      - name: Typecheck
+      - name: Typecheck (src)
         working-directory: miner-ui
         run: npx tsc --noEmit
+
+      - name: Typecheck (api — Vercel functions)
+        working-directory: miner-ui
+        run: npx tsc -p tsconfig.api.json --noEmit
 
       - name: Build
         working-directory: miner-ui

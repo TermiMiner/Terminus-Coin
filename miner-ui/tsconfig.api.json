@@ -1,0 +1,21 @@
+{
+  // Typecheck the Vercel serverless functions in api/. Kept SEPARATE from the
+  // browser tsconfig.json (DOM lib + bundler/Vite world) because api/ is a Node
+  // + @vercel/node runtime — mixing the two under one config produces spurious
+  // lib/resolution errors. CI runs `tsc -p tsconfig.api.json --noEmit`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noEmit": true
+  },
+  "include": ["api"]
+}

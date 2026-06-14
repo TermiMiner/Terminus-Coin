@@ -469,7 +469,7 @@ export default function App() {
     if (!burner.publicKey) return;
     try {
       if (sharedAvailable) {
-        const res = await sharedTopUp(burner.publicKey);
+        const res = await sharedTopUp(burner.publicKey, selectedRelayer?.desc.baseUrl ?? "");
         const detail = res.skipped ? "(already funded)" : `tx: ${res.signature?.slice(0, 16)}…`;
         alert(`Shared-relayer top-up: ${detail}`);
       } else if (localAvailable && connection) {

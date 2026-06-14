@@ -45,8 +45,20 @@ const MAX_DAILY_LAMPORTS        = parseInt(process.env.MAX_DAILY_LAMPORTS       
 const BOOTSTRAP_MODE         = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
 // Relayer's permanent cost-recovery floor — enforced on repeat claims
 // regardless of BOOTSTRAP_MODE (which now governs only the first-claim subsidy
-// + sunset). Falls back to the legacy env name for back-compat.
-const MIN_TIP_TERM = parseInt(process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000"); // 0.5 TERM
+// + sunset). Falls back to the legacy env name for back-compat. Fail loud on a
+// non-integer/negative value: a silent NaN/0 here (e.g. parseInt("0.5")===0)
+// would drop the floor entirely on the money path — every repeat claim would
+// then relay for a 0 tip and the relayer would eat all SOL costs.
+function parseMinTipTerm(): number {
+  const raw = (process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000").trim();
+  if (raw === "") return 500_000; // empty env → default floor, never a silent 0
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`MIN_TIP_TERM must be a non-negative integer in raw TERM units (6 decimals); got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+const MIN_TIP_TERM = parseMinTipTerm(); // raw TERM units, default 0.5 TERM
 const BOOTSTRAP_SUNSET_DATE  = process.env.BOOTSTRAP_SUNSET_DATE ?? ""; // ISO 8601, e.g. "2026-09-15T00:00:00Z"
 const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
 

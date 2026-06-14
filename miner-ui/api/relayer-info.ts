@@ -11,8 +11,20 @@ const MAX_DAILY_LAMPORTS    = parseInt(process.env.MAX_DAILY_LAMPORTS    ?? "100
 const BOOTSTRAP_SUNSET_DATE   = process.env.BOOTSTRAP_SUNSET_DATE ?? "";
 const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
 // Relayer's permanent cost-recovery floor. Read independent of BOOTSTRAP_MODE
-// so it survives the launch phase; falls back to the legacy env name.
-const MIN_TIP_TERM            = parseInt(process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000");
+// so it survives the launch phase; falls back to the legacy env name. Fail loud
+// on a non-integer/negative value so the advertised floor can't silently vanish
+// (parseInt("0.5")===0 / parseInt("0.5TERM")===NaN both pass the old > 0 guard
+// as false) — it must stay in lockstep with what relay.ts enforces.
+function parseMinTipTerm(): number {
+  const raw = (process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000").trim();
+  if (raw === "") return 500_000; // empty env → default floor, never a silent 0
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`MIN_TIP_TERM must be a non-negative integer in raw TERM units (6 decimals); got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+const MIN_TIP_TERM            = parseMinTipTerm();
 const BOOTSTRAP_MODE          = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
 
 function deprecationInfo() {

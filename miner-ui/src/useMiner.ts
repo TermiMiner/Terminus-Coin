@@ -8,6 +8,7 @@ import {
 } from "@solana/spl-token";
 import idl from "../idl/terminuscoin.json";
 import { PROGRAM_ID, GLOBAL_STATE_PDA, MINT_PDA, STAKE_POOL_PDA, deriveBondPDA } from "./useChainState";
+import { minNetReward, baseRewardForEpoch } from "./tipMath";
 import type { MineRequest, MineResult } from "./miner.worker";
 import type { MinerWallet } from "./burnerWallet";
 import type { BroadcastAdapter } from "./relayerAdapter";
@@ -206,12 +207,16 @@ export function useMiner(
         const hr = Math.round(attempts / (elapsed / 1000));
         setHashrate(hr);
 
-        // Predict the reward this nonce will earn (assumes epoch 0 — UI doesn't track epoch yet).
-        // Hold the reveal until the claim actually lands on chain — keeps the
-        // slot-machine moment intact instead of spoiling it during mining.
-        const baseUnscaled = 3_400_000n;
-        const expectedRaw = baseUnscaled * (1n << BigInt(bonusBits));
+        // Epoch-aware reward for THIS block (mirrors lib.rs emission): gross =
+        // base(epoch) << bits, net = minNetReward(epoch) << bits — the lucky
+        // multiplier (2^bits) scales both. Hold the reveal until the claim lands
+        // on chain so the slot-machine moment isn't spoiled during mining.
+        const launchTime = gs.launchTime.toNumber();
+        const nowSec = BigInt(Math.floor(Date.now() / 1000));
+        const diff = BigInt(difficulty);
+        const expectedRaw = baseRewardForEpoch(BigInt(launchTime), nowSec) << BigInt(bonusBits);
         const expectedTerm = (Number(expectedRaw) / 1e6).toFixed(2);
+        const netForBonus = minNetReward(BigInt(launchTime), diff, nowSec) << BigInt(bonusBits);
         const luckLabel =
           bonusBits >= 8 ? " 🎰 JACKPOT" :
           bonusBits >= 6 ? " ⭐ BIG HIT" :
@@ -222,6 +227,19 @@ export function useMiner(
 
         if (!shouldRestartRef.current) { setStatus("idle"); return; }
 
+        // ── Per-block tip-feasibility gate ─────────────────────────────────
+        // The relayer tip is paid out of the claim's reward and the program
+        // enforces tip <= net_reward. A base block can fall below the relayer's
+        // floor while a luckier block (net scales 2^bits) still clears it — so
+        // skip a block that can't cover the tip and re-mine, fishing for a
+        // claimable lucky one. Beats submitting a doomed claim (relayer 422) or
+        // stopping. No-op when tip=0 (self-fund) or the floor is feasible.
+        if (relayerTipTerm > 0 && netForBonus < BigInt(Math.round(relayerTipTerm))) {
+          appendLog("dim", `[${ts()}] Reward ~${expectedTerm} TERM doesn't cover the ${(relayerTipTerm / 1e6).toFixed(2)} TERM tip — need a luckier block. Re-mining…`);
+          if (shouldRestartRef.current) startRef.current(); else setStatus("idle");
+          return;
+        }
+
         // ── Cooldown gate ──────────────────────────────────────────────────
         // Hold the (already-mined) nonce until the on-chain rate-limit cooldown
         // elapses, instead of firing a claim the program would reject with
@@ -229,7 +247,6 @@ export function useMiner(
         // The cooldown is Phase-1-only (sunsets at 1 yr), so honor it only while
         // in Phase 1. Mining usually overlaps the cooldown, so this only holds on
         // a fast nonce; the rest of the time `remaining` is already ≤ 0.
-        const launchTime = gs.launchTime.toNumber();
         const rateLimitSec = gs.rateLimitSeconds.toNumber();
         const inPhase1 = Date.now() / 1000 - launchTime < 31_557_600; // PHASE2_ACTIVATION_SECS
         const cooldownMs = inPhase1 && rateLimitSec > 0 ? rateLimitSec * 1000 : 0;
@@ -404,8 +421,18 @@ export function useMiner(
   // keep startRef current so the auto-restart closure always calls the latest version
   useEffect(() => { startRef.current = start; }, [start]);
 
-  // stop worker on unmount
-  useEffect(() => () => { workerRef.current?.terminate(); }, []);
+  // Reset the cooldown gate when the active wallet changes — last_claim_time is
+  // per-wallet on-chain (a freshly-connected wallet has none), so the previous
+  // wallet's cooldown must not carry over and delay its first claim.
+  useEffect(() => { lastClaimAtRef.current = 0; }, [wallet.publicKey?.toBase58()]);
+
+  // stop worker on unmount — also clear the restart flag so a claim parked on
+  // the cooldown await (or mid-submit) doesn't resume and spawn a fresh worker
+  // after teardown (stop() clears it on an explicit Stop; unmount must too).
+  useEffect(() => () => {
+    shouldRestartRef.current = false;
+    workerRef.current?.terminate();
+  }, []);
 
   return { status, logs, hashrate, lastEvent, start, stop };
 }

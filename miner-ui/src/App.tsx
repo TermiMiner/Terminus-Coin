@@ -204,12 +204,21 @@ export default function App() {
   // (see selectCheapest). NOT randomized: distributing load across ≥2 production
   // relayers is a deferred, ranking-based design (MAINNET_CHECKLIST §7), never a
   // render-time random.
-  const tipCeil = chain
-    ? Number(tipCeiling(minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))))
+  const baseNetRaw = chain
+    ? minNetReward(chain.launchTime, chain.difficulty, BigInt(Math.floor(Date.now() / 1000)))
+    : 0n;
+  const tipCeil = chain ? Number(tipCeiling(baseNetRaw)) : Number(MAX_TIP_TERM);
+  // Largest floor ANY block could ever satisfy: a max-bonus (2^8) block's net,
+  // still capped by the protocol's MAX_TIP_TERM (5 TERM). A relayer floor above
+  // this can never be cleared — not even by a jackpot — so mining it just fishes
+  // forever (or 422-churns once floor > MAX_TIP_TERM). BONUS_CAP = 8, per lib.rs.
+  const maxClaimableFloor = chain
+    ? Number((baseNetRaw << 8n) < MAX_TIP_TERM ? (baseNetRaw << 8n) : MAX_TIP_TERM)
     : Number(MAX_TIP_TERM);
   // AUTO = cheapest feasible; a manual pin overrides it (honored even if the
-  // pinned relayer's floor is infeasible — the tipFloorBlocksStart guard then
-  // blocks Start and warns). A pinned relayer that's gone/unreachable OR out of
+  // pinned relayer's floor is infeasible — useMiner's per-block gate then skips
+  // base blocks and claims only the luckier ones that clear the floor (the tip
+  // panel warns). A pinned relayer that's gone/unreachable OR out of
   // daily quota falls back to AUTO — routing to a no-quota relayer would just
   // 429 at broadcast on every claim. (Reliability failover is still deferred.)
   const selectedRelayer = (() => {
@@ -307,11 +316,12 @@ export default function App() {
   // Tip preset ladder + Start gate, from the bounds computed above (tipFloor /
   // tipCeil): OFF/floor/2×/4× clamped to the net-reward ceiling.
   const { choices: tipChoices, floorInfeasible: tipFloorInfeasible } = deriveTipChoices(tipFloor, tipCeil);
-  // Block Start when an explicitly-routed relayer's floor exceeds the base-block
-  // net reward — those claims fail tip<=net_reward on ≥50% of blocks. AUTO never
-  // selects an infeasible relayer, so this is dormant until manual relayer
-  // pinning (step ③); prompt a route switch instead.
-  const tipFloorBlocksStart = miningMode === "shared" && tipFloorInfeasible;
+  // Hard-stop tier (vs the fishable infeasible tier): a floor above what even a
+  // max-bonus block can pay (or above MAX_TIP_TERM) can NEVER be cleared, so
+  // fishing is futile (CPU burn, or 422-churn when floor > MAX_TIP_TERM). AUTO
+  // never selects such a relayer; only a manual pin reaches here. Blocks Start /
+  // stops a running miner and prompts a route switch.
+  const tipFloorNeverClears = miningMode === "shared" && tipFloor > 0 && tipFloor > maxClaimableFloor;
 
   // Auto-nudge the tip up to the active relayer's advertised floor whenever the
   // effective mining mode is SHARED and that relayer advertises a minTipTerm.
@@ -388,7 +398,15 @@ export default function App() {
     && miningMode !== "loading" && miningMode !== "no-wallet"
     && miningMode !== "self-fund-needs-topup"
     && miningMode !== "external-needs-funding"
-    && !tipFloorBlocksStart;
+    && !tipFloorNeverClears;
+
+  // Stop a RUNNING miner only when its pinned relayer's floor can NEVER be cleared
+  // (above even a max-bonus block's net, or above MAX_TIP_TERM). The fishable tier
+  // keeps mining via useMiner's per-block gate; only this hopeless tier hard-stops.
+  useEffect(() => {
+    if (mining && tipFloorNeverClears) stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mining, tipFloorNeverClears]);
 
   // ── One-click start (new-user onboarding) ────────────────────────────────
   // With no wallet connected, pressing Start generates a burner and — once its
@@ -413,12 +431,12 @@ export default function App() {
     // exists, so the normal UI takes over (topup prompt, route switch, etc.).
     if (miningMode === "self-fund-needs-topup"
       || miningMode === "external-needs-funding"
-      || tipFloorBlocksStart) {
+      || tipFloorNeverClears) {
       setAutoStartPending(false);
     }
     // else miningMode === "loading" → keep waiting for the probe + balance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStartPending, canMine, mining, miningMode, tipFloorBlocksStart]);
+  }, [autoStartPending, canMine, mining, miningMode, tipFloorNeverClears]);
 
   function handleGenerateBurner() {
     burner.generate();
@@ -926,12 +944,17 @@ export default function App() {
               · custom: {(claimTip / 1_000_000).toFixed(3)} TERM
             </span>
           )}
-          {/* Infeasible floor: floor > base-block net reward. Start is blocked
-              (canMine → tipFloorBlocksStart) because every ordinary block would
-              fail tip<=net_reward on-chain; prompt a route switch instead. */}
-          {tipFloorInfeasible && (
-            <span className="wallet-address" style={{ color: "#ff5555" }} title="This relayer's floor exceeds the current base-block net reward, so an ordinary claim would fail the on-chain tip<=net_reward rule on ≥50% of blocks. Mining through this relayer is paused — switch to self-fund (or another relayer when available).">
-              ⚠ floor &gt; base-block reward — mining paused, switch routes
+          {/* Floor feasibility tiers (see tipFloorInfeasible / tipFloorNeverClears).
+              never-clears: above what even a max-bonus block (or MAX_TIP_TERM) can
+              pay → hopeless, Start blocked. infeasible-but-fishable: base blocks
+              are skipped client-side but luckier ones still claim. */}
+          {tipFloorNeverClears ? (
+            <span className="wallet-address" style={{ color: "#ff5555" }} title="This relayer's floor is higher than any block could ever pay — even a max-bonus jackpot, and capped by the 5 TERM protocol tip limit. No claim can clear it, so mining is blocked. Switch to self-fund or pin a lower-floor relayer.">
+              ⚠ floor too high for any block (even a jackpot) — switch routes
+            </span>
+          ) : tipFloorInfeasible && (
+            <span className="wallet-address" style={{ color: "#ff5555" }} title="This relayer's floor exceeds the current base-block net reward, so ordinary (base) blocks can't cover the tip and are skipped — only luckier blocks (higher reward) will claim. Switch to self-fund for steady mining, or use a lower-floor relayer.">
+              ⚠ floor &gt; base-block reward — only lucky blocks claim; self-fund for steady mining
             </span>
           )}
         </div>

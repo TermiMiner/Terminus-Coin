@@ -38,13 +38,20 @@ function burnBpsFor(difficulty: bigint): bigint {
   return BURN_BPS_MIN + (BURN_BPS_MAX - BURN_BPS_MIN) * progress / span;
 }
 
-// Minimum net reward (bonus_bits = 0) a claim pays out in the current epoch,
-// raw TERM units. Mirrors the emission schedule + reward split (lib.rs:240-256).
-export function minNetReward(launchTime: bigint, difficulty: bigint, nowSec: bigint): bigint {
+// Gross base reward (bonus_bits = 0) for the current epoch — INITIAL_BASE_REWARD
+// halved per 5-yr epoch, clamped to MAX_EPOCHS. Mirrors lib.rs emission. The
+// lucky multiplier (2^bonus_bits) scales this; callers shift left by the bits.
+export function baseRewardForEpoch(launchTime: bigint, nowSec: bigint): bigint {
   const elapsed = nowSec > launchTime ? nowSec - launchTime : 0n;
   let epoch = elapsed / EPOCH_SECONDS;
   if (epoch > MAX_EPOCHS - 1n) epoch = MAX_EPOCHS - 1n;
-  const baseReward = INITIAL_BASE_REWARD >> epoch;           // bonus_bits = 0
+  return INITIAL_BASE_REWARD >> epoch;
+}
+
+// Minimum net reward (bonus_bits = 0) a claim pays out in the current epoch,
+// raw TERM units. Mirrors the emission schedule + reward split (lib.rs:240-256).
+export function minNetReward(launchTime: bigint, difficulty: bigint, nowSec: bigint): bigint {
+  const baseReward = baseRewardForEpoch(launchTime, nowSec);  // bonus_bits = 0
   const burn = baseReward * burnBpsFor(difficulty) / BPS_DENOM;
   const treasury = baseReward * TREASURY_BPS / BPS_DENOM;
   const net = baseReward - burn - treasury;

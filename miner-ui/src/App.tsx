@@ -6,7 +6,7 @@ import { useMiner } from "./useMiner";
 import ClaimReveal from "./ClaimReveal";
 import HelpTab from "./HelpTab";
 import { minNetReward, deriveTipChoices, tipCeiling, MAX_TIP_TERM } from "./tipMath";
-import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, hasQuota, type RelayerStatus } from "./relayers";
+import { loadRelayers, probeAll, selectCheapest, addCustomRelayer, removeCustomRelayer, hasQuota, relayerReady, relayerStateLabel, type RelayerStatus } from "./relayers";
 import {
   BrowserKeypairWallet,
   BURNER_STORAGE_KEY,
@@ -758,11 +758,8 @@ export default function App() {
           {relayerStatuses.map((s) => {
             const sel = selectedRelayer?.desc.baseUrl === s.desc.baseUrl;
             const floor = s.info?.minTipTerm ?? 0;
-            const ready = s.reachable && !!s.info?.pubkey && floor <= tipCeil && hasQuota(s);
-            const state = !s.reachable ? "○ down"
-              : floor > tipCeil ? "⚠ floor too high"
-              : !hasQuota(s) ? "⚠ no quota"
-              : "● ready";
+            const ready = relayerReady(s, tipCeil);
+            const state = relayerStateLabel(s, tipCeil);
             const name = s.desc.name ?? (s.desc.baseUrl === "" ? "same-origin" : s.desc.baseUrl.replace(/^https:\/\//, ""));
             const isPinned = pinnedRelayer === s.desc.baseUrl;
             return (

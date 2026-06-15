@@ -9,6 +9,7 @@ import {
 import idl from "../idl/terminuscoin.json";
 import { PROGRAM_ID, GLOBAL_STATE_PDA, MINT_PDA, STAKE_POOL_PDA, deriveBondPDA } from "./useChainState";
 import { minNetReward, baseRewardForEpoch } from "./tipMath";
+import { luckTier } from "./luck";
 import type { MineRequest, MineResult } from "./miner.worker";
 import type { MinerWallet } from "./burnerWallet";
 import type { BroadcastAdapter } from "./relayerAdapter";
@@ -217,11 +218,8 @@ export function useMiner(
         const expectedRaw = baseRewardForEpoch(BigInt(launchTime), nowSec) << BigInt(bonusBits);
         const expectedTerm = (Number(expectedRaw) / 1e6).toFixed(2);
         const netForBonus = minNetReward(BigInt(launchTime), diff, nowSec) << BigInt(bonusBits);
-        const luckLabel =
-          bonusBits >= 8 ? " 🎰 JACKPOT" :
-          bonusBits >= 6 ? " ⭐ BIG HIT" :
-          bonusBits >= 4 ? " ✨ lucky" :
-          "";
+        const tier = luckTier(bonusBits);
+        const luckLabel = tier.label ? ` ${tier.glyph} ${tier.label}` : "";
 
         appendLog("dim", `[${ts()}] Found nonce ${nonce} in ${attempts.toLocaleString()} attempts (${(elapsed / 1000).toFixed(2)}s, ~${hr.toLocaleString()} H/s)`);
 

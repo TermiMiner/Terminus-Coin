@@ -114,6 +114,13 @@ export async function loadRelayers(): Promise<RelayerDescriptor[]> {
     seen.add(d.baseUrl);
     merged.push(d);
   }
+  // INVARIANT: the bundled (same-origin) relayer stays FIRST — selectCheapest's
+  // prefer-home tie-break returns the first eligible within the cheapest band,
+  // which is only "home" if BUNDLED leads the merge. Guard it in dev so a future
+  // source reorder can't silently break prefer-home.
+  if (import.meta.env.DEV && merged.length > 0 && merged[0].source !== "bundled") {
+    console.warn("relayers: bundled relayer is not first in merge order — prefer-home selection may misbehave");
+  }
   return merged;
 }
 
@@ -155,15 +162,26 @@ export const MIN_DAILY_HEADROOM_LAMPORTS = 5_000_000;
 export const hasQuota = (s: RelayerStatus): boolean =>
   s.info?.dailyRemaining === undefined || s.info.dailyRemaining >= MIN_DAILY_HEADROOM_LAMPORTS;
 
-// Eligible = reachable, advertises a pubkey, has quota headroom, and its floor is
-// feasible against the current base-block net reward (tipCeilRaw from tipMath).
+// Single source of truth for "is this relayer usable right now": reachable,
+// advertises a pubkey, floor is feasible vs the base-block ceiling, and has daily
+// headroom. Selection (eligibleRelayers) and the UI status both use it, so the
+// ● ready dot can't disagree with what AUTO actually picks.
+export function relayerReady(s: RelayerStatus, tipCeilRaw: number): boolean {
+  return s.reachable && !!s.info?.pubkey && floorOf(s) <= tipCeilRaw && hasQuota(s);
+}
+
+// Human-readable panel status — the first failing clause of relayerReady(), in
+// order, so the label always matches the boolean.
+export function relayerStateLabel(s: RelayerStatus, tipCeilRaw: number): string {
+  if (!s.reachable || !s.info?.pubkey) return "○ down";
+  if (floorOf(s) > tipCeilRaw) return "⚠ floor too high";
+  if (!hasQuota(s)) return "⚠ no quota";
+  return "● ready";
+}
+
+// Eligible = relayerReady, as a filter for selection call sites.
 export function eligibleRelayers(statuses: RelayerStatus[], tipCeilRaw: number): RelayerStatus[] {
-  return statuses.filter((s) => {
-    if (!s.reachable || !s.info?.pubkey) return false;
-    if (floorOf(s) > tipCeilRaw) return false;                         // infeasible floor
-    if (!hasQuota(s)) return false;                                     // no daily headroom
-    return true;
-  });
+  return statuses.filter((s) => relayerReady(s, tipCeilRaw));
 }
 
 // Deterministic "cheapest, prefer-home" selection: the lowest-floor eligible

@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import type { MinerEvent } from "./useMiner";
+import { luckTier } from "./luck";
 import "./claimReveal.css";
 
-// Bonus-tier mapping — mirrors useMiner's luck labels so the reveal matches the
-// terminal log wording (🎰 ≥8, ⭐ ≥6, ✨ ≥4, else base).
+// Reveal animation params (hold / confetti / count-up) layered on the shared
+// luckTier glyph/label/cls — the bonus-bit cutoffs live ONLY in luck.ts, so the
+// reveal can't drift from the terminal log.
 function tierOf(bits: number) {
-  if (bits >= 8) return { cls: "jackpot", glyph: "🎰", label: "JACKPOT", hold: 3400, confetti: 48, countUp: true };
-  if (bits >= 6) return { cls: "bighit",  glyph: "⭐", label: "BIG HIT", hold: 2600, confetti: 22, countUp: true };
-  if (bits >= 4) return { cls: "lucky",   glyph: "✨", label: "LUCKY",   hold: 1900, confetti: 0,  countUp: false };
-  return              { cls: "base",    glyph: "🪙", label: "",        hold: 1100, confetti: 0,  countUp: false };
+  const t = luckTier(bits);
+  const fx =
+    t.cls === "jackpot" ? { hold: 3400, confetti: 48, countUp: true } :
+    t.cls === "bighit"  ? { hold: 2600, confetti: 22, countUp: true } :
+    t.cls === "lucky"   ? { hold: 1900, confetti: 0,  countUp: false } :
+                          { hold: 1100, confetti: 0,  countUp: false };
+  return { ...t, ...fx };
 }
 
 const CONFETTI_COLORS = ["#00ff41", "#d4af37", "#ffd700", "#ff3333", "#00d4ff", "#ff66cc"];

@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
-import { Redis } from "@upstash/redis";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { getRpcUrl, loadRelayerKeypair, kv, getMinTipTerm } from "./_env";
 
 const MAX_TOPUPS_PER_WALLET = parseInt(process.env.MAX_TOPUPS_PER_WALLET ?? "1");
 const MAX_DAILY_LAMPORTS    = parseInt(process.env.MAX_DAILY_LAMPORTS    ?? "1000000000");
@@ -10,21 +10,8 @@ const MAX_DAILY_LAMPORTS    = parseInt(process.env.MAX_DAILY_LAMPORTS    ?? "100
 // a relayed claim to learn the relayer is sunsetting.
 const BOOTSTRAP_SUNSET_DATE   = process.env.BOOTSTRAP_SUNSET_DATE ?? "";
 const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
-// Relayer's permanent cost-recovery floor. Read independent of BOOTSTRAP_MODE
-// so it survives the launch phase; falls back to the legacy env name. Fail loud
-// on a non-integer/negative value so the advertised floor can't silently vanish
-// (parseInt("0.5")===0 / parseInt("0.5TERM")===NaN both pass the old > 0 guard
-// as false) — it must stay in lockstep with what relay.ts enforces.
-function parseMinTipTerm(): number {
-  const raw = (process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000").trim();
-  if (raw === "") return 500_000; // empty env → default floor, never a silent 0
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`MIN_TIP_TERM must be a non-negative integer in raw TERM units (6 decimals); got ${JSON.stringify(raw)}`);
-  }
-  return n;
-}
-const MIN_TIP_TERM            = parseMinTipTerm();
+// Relayer's permanent cost-recovery floor (raw TERM units) is shared from
+// api/_env.ts (getMinTipTerm) — single source with what relay.ts enforces.
 const BOOTSTRAP_MODE          = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
 
 function deprecationInfo() {
@@ -42,10 +29,7 @@ function deprecationInfo() {
   };
 }
 
-// Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
-const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
-const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
-const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
+// KV client (Upstash / Vercel-KV) is shared from api/_env.ts.
 
 /**
  * GET /api/relayer-info[?wallet=<pubkey>]
@@ -55,8 +39,7 @@ const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_T
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    const raw = process.env.RELAYER_SECRET_KEY;
-    if (!raw) {
+    if (!process.env.RELAYER_SECRET_KEY) {
       // No relayer configured on this deployment. Return a DEFINITIVE 200
       // "not configured" — distinct from a transient 500 outage below — so the
       // client treats it as a clean absence (route burners to self-fund) rather
@@ -64,13 +47,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // 200 with no pubkey to null.
       return res.status(200).json({ configured: false });
     }
-    // RPC only matters once a relayer IS configured. Fail loud if RPC_URL is
-    // unset — never silently default to a public endpoint (a mainnet deploy
-    // must not route to the wrong network).
-    const rpc = (process.env.RPC_URL ?? "").trim();
-    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
-    const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
-    const conn = new Connection(rpc, "confirmed");
+    // RPC only matters once a relayer IS configured. getRpcUrl() fails loud if
+    // RPC_URL is unset (api/_env.ts) — never silently default to a public node.
+    const relayer = loadRelayerKeypair();
+    const conn = new Connection(getRpcUrl(), "confirmed");
     const balance = await conn.getBalance(relayer.publicKey);
 
     const out: Record<string, unknown> = {
@@ -109,7 +89,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Permanent relayer floor — advertised regardless of bootstrap so the UI
     // can derive tip presets and the floor stays enforced after the launch phase.
-    if (MIN_TIP_TERM > 0) out.minTipTerm = MIN_TIP_TERM;
+    const minTip = getMinTipTerm();
+    if (minTip > 0) out.minTipTerm = minTip;
     // Bootstrap governs only the temporary first-claim subsidy + sunset banner.
     if (BOOTSTRAP_MODE) out.bootstrapMode = true;
     const dep = deprecationInfo();

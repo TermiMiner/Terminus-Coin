@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MinerEvent } from "./useMiner";
 import { luckTier } from "./luck";
 import "./claimReveal.css";
@@ -29,20 +29,46 @@ const reducedMotion = () =>
 export default function ClaimReveal({ lastEvent }: { lastEvent: MinerEvent | null }) {
   const [shown, setShown] = useState<MinerEvent | null>(null);
   const [displayTerm, setDisplayTerm] = useState(0);
+  // A claimed event that arrived while the tab was hidden (e.g. a Phantom
+  // approval popup backgrounded it), to be played when the tab returns. `at`
+  // bounds staleness so a long-stale reveal doesn't pop up on return.
+  const pendingRef = useRef<{ ev: MinerEvent; at: number } | null>(null);
 
-  // Show on each new "claimed" event; auto-dismiss after the tier's hold.
+  // Decide WHAT to reveal: the latest claimed event — immediately if the tab is
+  // visible, else DEFER and play it when the tab returns. Phantom's approval
+  // popup can background the tab; without this the reveal was dropped (review #5).
   useEffect(() => {
     if (!lastEvent || lastEvent.kind !== "claimed") return;
-    if (typeof document !== "undefined" && document.hidden) return; // no point on a hidden tab
+    if (typeof document !== "undefined" && document.hidden) {
+      pendingRef.current = { ev: lastEvent, at: Date.now() };
+      return;
+    }
     setShown(lastEvent);
-    const { hold } = tierOf(lastEvent.bonusBits ?? 0);
-    const id = window.setTimeout(
-      () => setShown((cur) => (cur?.seq === lastEvent.seq ? null : cur)),
-      hold,
-    );
-    return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastEvent?.seq]);
+
+  // Play a deferred reveal when the tab returns to the foreground — unless it's
+  // gone stale (a 2-min-old jackpot popping up on return would be odd).
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) return;
+      const p = pendingRef.current;
+      pendingRef.current = null;
+      if (p && Date.now() - p.at < 120_000) setShown(p.ev);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // Auto-dismiss the current reveal after its tier's hold. Keyed on shown.seq so
+  // a new reveal cancels the previous timer.
+  useEffect(() => {
+    if (!shown) return;
+    const { hold } = tierOf(shown.bonusBits ?? 0);
+    const id = window.setTimeout(() => setShown(null), hold);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown?.seq]);
 
   // Count-up for big reveals (skipped under reduced-motion or for small tiers).
   useEffect(() => {

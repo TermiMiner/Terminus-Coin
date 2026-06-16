@@ -96,7 +96,16 @@ export function sharedRelayerAdapter(pubkey: PublicKey, baseUrl = ""): Broadcast
         body: JSON.stringify({ transaction: b64 }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? `relay failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        // Surface the relayer's program logs (+ detail) on the thrown error so
+        // useMiner's friendlyClaimError can classify the REAL reason — the 422
+        // "claim rejected at simulation" carries e.g. RateLimitExceeded in its
+        // logs; without them it falls through to the generic on-chain message.
+        const e = new Error(data?.error ?? `relay failed (HTTP ${res.status})`);
+        if (Array.isArray(data?.logs)) (e as any).logs = data.logs;
+        if (typeof data?.detail === "string") (e as any).detail = data.detail;
+        throw e;
+      }
       return data.signature;
     },
   };

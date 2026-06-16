@@ -98,7 +98,7 @@ function friendlyClaimError(err: any): string {
 // Rate limits self-resolve after the cooldown; everything else retries fast.
 function backoffForError(err: any): number {
   const all = `${err?.message ?? ""} ${(err?.logs ?? []).join(" ")}`;
-  if (/RateLimitExceeded/i.test(all))   return 60_000;  // matches set_rate_limit default
+  if (/RateLimitExceeded/i.test(all))   return 10_000;  // just past cooldown — chain clock catches up fast; no need for a full 60s
   if (/ContractPaused/i.test(all))      return 30_000;
   if (/AccountFrozen/i.test(all))       return 60_000;
   if (/insufficient (lamports|funds)/i.test(all)) return 30_000;
@@ -249,9 +249,11 @@ export function useMiner(
         const inPhase1 = Date.now() / 1000 - launchTime < 31_557_600; // PHASE2_ACTIVATION_SECS
         const cooldownMs = inPhase1 && rateLimitSec > 0 ? rateLimitSec * 1000 : 0;
         if (cooldownMs > 0 && lastClaimAtRef.current > 0) {
-          // +2s buffer for client/chain clock drift (confirmation lag already
-          // makes our timer conservative — this is belt-and-suspenders).
-          const remaining = lastClaimAtRef.current + cooldownMs + 2_000 - Date.now();
+          // +8s buffer: the on-chain rate-limit check uses Solana's clock, which
+          // drifts vs real wall-time (more so on devnet), so a thin buffer lets
+          // the first post-cooldown claim land a hair early and bounce off
+          // RateLimitExceeded. 8s comfortably absorbs the drift.
+          const remaining = lastClaimAtRef.current + cooldownMs + 8_000 - Date.now();
           if (remaining > 0) {
             appendLog("dim", `[${ts()}] Cooldown — holding ${Math.ceil(remaining / 1000)}s before claiming (nonce ready)…`);
             await new Promise((r) => setTimeout(r, remaining));

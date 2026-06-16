@@ -44,12 +44,16 @@ export interface ChainStateResult {
   state: ChainState | null;
   loading: boolean;       // true until first poll attempt completes
   initialized: boolean;   // true if program account was found at least once
+  rpcError: string | null; // non-null when the last poll couldn't REACH the RPC
+                           // (401 / blocked key / wrong origin / 429 / network) —
+                           // distinct from a genuinely-missing program account
 }
 
 export function useChainState(connection: Connection | null): ChainStateResult {
   const [state, setState] = useState<ChainState | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialized, setInitialized] = useState(false);
+  const [rpcError, setRpcError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!connection) return;
@@ -89,9 +93,20 @@ export function useChainState(connection: Connection | null): ChainStateResult {
             treasuryBalance: treasury,
           });
           setInitialized(true);
+          setRpcError(null);
         }
-      } catch {
-        // program not yet initialised — leave state null
+      } catch (err: any) {
+        // Distinguish "program account genuinely missing" from "couldn't reach
+        // the RPC" — both used to land here and surface identically as "NOT
+        // INITIALIZED", which masked the 2026-06-15 domain-lock outage. Anchor
+        // throws "Account does not exist / has no data" for a truly-missing
+        // account; anything else fetching it (401 / blocked key / wrong origin /
+        // 429 / network) is an RPC reachability problem.
+        if (!cancelled) {
+          const msg = String(err?.message ?? err);
+          const missing = /account does not exist|has no data/i.test(msg);
+          setRpcError(missing ? null : "Can't reach the RPC — check your connection or the RPC key's allowed-domains / cluster.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -105,7 +120,7 @@ export function useChainState(connection: Connection | null): ChainStateResult {
     };
   }, [connection]);
 
-  return { state, loading, initialized };
+  return { state, loading, initialized, rpcError };
 }
 
 export { SUPPLY_CAP, PROGRAM_ID };

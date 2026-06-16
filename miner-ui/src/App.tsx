@@ -48,7 +48,7 @@ function capPct(minted: bigint): string {
 export default function App() {
   const { connection } = useConnection();
   const phantom = useWallet();
-  const { state: chain, loading, initialized } = useChainState(connection);
+  const { state: chain, loading, initialized, rpcError } = useChainState(connection);
 
   // Burner + (optional) local relayer wallets. Local relayer is for users
   // running `npm run dev` against their own keypair. The deployed site uses
@@ -531,6 +531,7 @@ export default function App() {
   const placeholder = loading ? "…" : (initialized ? "—" : "—");
   const chainStatusLabel =
     loading ? "CONNECTING…" :
+    rpcError ? "RPC UNREACHABLE" :
     !initialized ? "NOT INITIALIZED" :
     chain?.paused ? "PAUSED" : "LIVE";
 
@@ -1043,7 +1044,8 @@ export default function App() {
             </div>
             <div className="stat-box">
               <div className="stat-label">Status</div>
-              <div className={`stat-value ${chain?.paused || (!loading && !initialized) ? "red" : ""}`}>
+              <div className={`stat-value ${chain?.paused || (!loading && (!initialized || !!rpcError)) ? "red" : ""}`}
+                title={rpcError ?? undefined}>
                 {chainStatusLabel}
               </div>
             </div>

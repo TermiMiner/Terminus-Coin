@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
-import { getRpcUrl, loadRelayerKeypair, kv } from "./_env";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Redis } from "@upstash/redis";
 
 const TOPUP_LAMPORTS = 7_500_000;         // 0.0075 SOL — covers setup + ~12h of 24/7 mining
 const RECIPIENT_BALANCE_CAP = 7_000_000;  // skip topup if recipient already has this much; keep < TOPUP_LAMPORTS (7.5M) so a just-granted wallet is caught
@@ -10,7 +10,10 @@ const MAX_TOPUPS_PER_WALLET     = parseInt(process.env.MAX_TOPUPS_PER_WALLET    
 const MAX_TOPUPS_PER_IP_PER_HR  = parseInt(process.env.MAX_TOPUPS_PER_IP_PER_HR  ?? "5");
 const MAX_DAILY_LAMPORTS        = parseInt(process.env.MAX_DAILY_LAMPORTS        ?? "1000000000"); // 1 SOL
 
-// KV client (Upstash / Vercel-KV) is shared from api/_env.ts.
+// Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
+const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
 function clientIp(req: VercelRequest): string {
   const hdr = req.headers["x-forwarded-for"];
@@ -115,10 +118,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ── On-chain checks ────────────────────────────────────────────────
-    // getRpcUrl() / loadRelayerKeypair() fail loud if their env is unset — never
-    // silently default to a public endpoint (api/_env.ts).
-    const relayer = loadRelayerKeypair();
-    const conn = new Connection(getRpcUrl(), "confirmed");
+    // Fail loud if RPC_URL is unset — never silently default to a public
+    // endpoint (a mainnet deploy must not route to devnet).
+    const rpc = (process.env.RPC_URL ?? "").trim();
+    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
+    const raw = process.env.RELAYER_SECRET_KEY;
+    if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
+    const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
+    const conn = new Connection(rpc, "confirmed");
 
     const balance = await conn.getBalance(recipientKey);
     if (balance >= RECIPIENT_BALANCE_CAP) {

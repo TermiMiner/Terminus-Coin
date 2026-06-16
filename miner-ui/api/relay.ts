@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { Redis } from "@upstash/redis";
 import { waitUntil } from "@vercel/functions";
 import { createHash } from "node:crypto";
-import { getRpcUrl, loadRelayerKeypair, kv, getMinTipTerm } from "./_env";
 
 const PROGRAM_ID                = "FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y";
 const PROGRAM_ID_PUBKEY         = new PublicKey(PROGRAM_ID);
@@ -43,12 +43,33 @@ const MAX_DAILY_LAMPORTS        = parseInt(process.env.MAX_DAILY_LAMPORTS       
 // devnet behavior, preserved so this code can ship without flipping the
 // operational policy.
 const BOOTSTRAP_MODE         = (process.env.BOOTSTRAP_MODE ?? "false").toLowerCase() === "true";
-// Relayer's permanent cost-recovery floor (raw TERM units) lives in api/_env.ts
-// (getMinTipTerm) — shared with relayer-info so enforce + advertise can't drift.
+// Relayer's permanent cost-recovery floor — enforced on repeat claims
+// regardless of BOOTSTRAP_MODE (which now governs only the first-claim subsidy
+// + sunset). Falls back to the legacy env name for back-compat. Fail loud on a
+// non-integer/negative value: a silent NaN/0 here (e.g. parseInt("0.5")===0)
+// would drop the floor entirely on the money path — every repeat claim would
+// then relay for a 0 tip and the relayer would eat all SOL costs.
+function parseMinTipTerm(): number {
+  const raw = (process.env.MIN_TIP_TERM ?? process.env.MIN_BOOTSTRAP_TIP_TERM ?? "500000").trim();
+  if (raw === "") return 500_000; // empty env → default floor, never a silent 0
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    // Invalid env → fall back to the DEFAULT floor. Never a silent 0 (that would
+    // disable the floor / relay for free) and never a throw (a module-load throw
+    // crashes the whole function at cold start — FUNCTION_INVOCATION_FAILED).
+    console.warn(`MIN_TIP_TERM invalid (${JSON.stringify(raw)}); falling back to default 500000`);
+    return 500_000;
+  }
+  return n;
+}
+const MIN_TIP_TERM = parseMinTipTerm(); // raw TERM units, default 0.5 TERM
 const BOOTSTRAP_SUNSET_DATE  = process.env.BOOTSTRAP_SUNSET_DATE ?? ""; // ISO 8601, e.g. "2026-09-15T00:00:00Z"
 const DEPRECATION_BANNER_DAYS = parseInt(process.env.DEPRECATION_BANNER_DAYS ?? "14");
 
-// KV client (Upstash / Vercel-KV) is shared from api/_env.ts.
+// Accept either Vercel KV's legacy env names or Upstash Marketplace's native names.
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_API_URL   ?? "";
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
+const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
 function clientIp(req: VercelRequest): string {
   const hdr = req.headers["x-forwarded-for"];
@@ -181,7 +202,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ── Deserialise + validate tx ──────────────────────────────────────
-    const relayer = loadRelayerKeypair();
+    const relayer = Keypair.fromSecretKey(
+      new Uint8Array(JSON.parse((process.env.RELAYER_SECRET_KEY ?? "").trim()))
+    );
 
     let tx: Transaction;
     try { tx = Transaction.from(Buffer.from(transaction, "base64")); }
@@ -198,10 +221,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Connection is needed for bootstrap-mode first-claim detection AND the
-    // broadcast itself. Construct once and share. getRpcUrl() fails loud if
-    // RPC_URL is unset (see api/_env.ts).
-    const conn = new Connection(getRpcUrl(), "confirmed");
+    // Connection is needed for bootstrap-mode first-claim detection AND
+    // the broadcast itself. Construct once and share. Fail loud if RPC_URL is
+    // unset — never silently default to a public endpoint (wrong-network footgun
+    // on a mainnet deploy; the public node is rate-limited anyway).
+    const rpc = (process.env.RPC_URL ?? "").trim();
+    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
+    const conn = new Connection(rpc, "confirmed");
 
     // ── Tip-floor + bootstrap policy ───────────────────────────────────
     // The tip floor (MIN_TIP_TERM) is a PERMANENT relayer cost-recovery rule,
@@ -239,12 +265,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         // Tip floor — non-subsidized claims must cover the relayer's SOL costs.
-        const minTip = getMinTipTerm();
-        if (!firstClaim && minTip > 0 && tip < BigInt(minTip)) {
+        if (!firstClaim && MIN_TIP_TERM > 0 && tip < BigInt(MIN_TIP_TERM)) {
           return res.status(429).json({
-            error: `Tip below relayer minimum (${(minTip / 1_000_000).toFixed(2)} TERM). Raise your tip in settings or switch to self-fund.`,
+            error: `Tip below relayer minimum (${(MIN_TIP_TERM / 1_000_000).toFixed(2)} TERM). Raise your tip in settings or switch to self-fund.`,
             quota: "tip-floor",
-            minTip,
+            minTip: MIN_TIP_TERM,
             providedTip: Number(tip),
           });
         }
@@ -302,8 +327,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // IP counter increments only on successful broadcast (preserves existing behavior).
     if (kv) {
-      await kv.incr(ipKey);
-      await kv.expire(ipKey, 3600);
+      await kv.incr(ipKey).then(() => kv.expire(ipKey, 3600));
     }
 
     // Respond to client immediately — client confirms the tx itself.

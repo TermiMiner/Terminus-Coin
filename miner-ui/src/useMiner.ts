@@ -261,6 +261,28 @@ export function useMiner(
           }
         }
 
+        // ── Freshness re-check (multi-miner PoW contention) ────────────────
+        // The nonce was mined against last_hash from the start of this round,
+        // but the cooldown wait above (plus mining/signing latency) gives a
+        // competing miner a window to claim and rotate last_hash — which would
+        // invalidate our nonce on-chain (InvalidProofOfWork). That's EXPECTED
+        // with multiple miners, not a failure, so re-mine SILENTLY here instead
+        // of firing a doomed claim (which flags a "stale nonce" event + wastes a
+        // relayer preflight). One extra GlobalState read; a no-op for a solo
+        // miner, where last_hash never moves between mine and submit.
+        try {
+          const fresh: any = await (program.account as any).globalState.fetch(GLOBAL_STATE_PDA);
+          const freshHash: number[] = fresh.lastHash;
+          if (freshHash.length !== lastHash.length || !freshHash.every((b, i) => b === lastHash[i])) {
+            appendLog("dim", `[${ts()}] Chain advanced during cooldown — re-mining (normal with multiple miners)…`);
+            if (shouldRestartRef.current) startRef.current(); else setStatus("idle");
+            return;
+          }
+        } catch {
+          // Couldn't re-check (RPC hiccup) — proceed; the submit path still
+          // catches a stale nonce reactively.
+        }
+
         // Submit claim
         setStatus("submitting");
         appendLog("dim", `[${ts()}] Submitting claim…`);

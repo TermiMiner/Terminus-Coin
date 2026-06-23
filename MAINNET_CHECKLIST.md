@@ -235,7 +235,12 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 - [ ] Logo PNG, ≥512×512, ≤200 KB
 - [ ] Metaplex JSON uploaded to **Arweave** (not GitHub/jsdelivr — those expire; Arweave is permanent)
-- [ ] `yarn metadata --uri <ARWEAVE_URL>` after init sequence
+- [ ] Attach metadata after the init sequence — call the script DIRECTLY, never `yarn metadata` (the yarn script hardcodes localhost/devnet env, and that inline assignment overrides any prefix, so it silently targets the wrong cluster):
+  ```
+  ANCHOR_PROVIDER_URL=<mainnet-rpc> ANCHOR_WALLET=<deployer-keypair.json> \
+    npx ts-node -P tsconfig.json scripts/create_metadata.ts --uri <ARWEAVE_URL>
+  ```
+  (This is the exact command `mainnet-launch.sh` prints when `METADATA_URI` is deferred.)
 
 ---
 

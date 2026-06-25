@@ -254,13 +254,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 > **Scope note for §1:** the relayer-tip market IS implemented in `claim()`. §1's "code not yet written" note is **stale** — the tip market is in scope and materially affects the quote.
 
-**Firm shortlist** (send the same package to 3–4 in parallel; compare on **price ÷ auditor-weeks** and Solana/Anchor track record, not headline price):
-
-- *Budget / mid-market:* Sec3 (continuity — we already run their X-Ray in CI), Accretion, Offside Labs, Bramah Systems, Hashlock, MadShield.
-- *Contest / marketplace* (often cheapest for a contained single-program scope): Cantina (Spearbit), Sherlock, Code4rena.
-- *Premium* (reference / price-anchor only): Neodyme, OtterSec, Halborn.
-
-**Quote-ask criteria:** fixed price; earliest start + lead time; auditor-weeks allocated; whether one remediation re-review is included; report-publishing terms.
+**Firm shortlist + quote-ask criteria:** see [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md) — the tiered shortlist (budget / contest / premium) and the five quote-ask items live there, so there's a single source of truth.
 
 ### Dependency advisories (`npm audit`) — triaged 2026-06-08
 

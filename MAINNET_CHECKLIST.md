@@ -246,9 +246,21 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 ## 5. Security audit
 
-- [ ] External audit completed (Neodyme / OtterSec / Halborn typical for Solana programs at this complexity)
+- [ ] External audit completed
 - [ ] All critical and high findings resolved
 - [ ] Audit report published
+
+**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer + docs, never the program); cut an `audit-scope-v1` tag on the merge commit before kickoff. Full reusable scope statement (paste into quote requests): **`~/Desktop/terminuscoin-audit-scope.md`**.
+
+> **Scope note for §1:** the relayer-tip market IS implemented in `claim()`. §1's "code not yet written" note is **stale** — the tip market is in scope and materially affects the quote.
+
+**Firm shortlist** (send the same package to 3–4 in parallel; compare on **price ÷ auditor-weeks** and Solana/Anchor track record, not headline price):
+
+- *Budget / mid-market:* Sec3 (continuity — we already run their X-Ray in CI), Accretion, Offside Labs, Bramah Systems, Hashlock, MadShield.
+- *Contest / marketplace* (often cheapest for a contained single-program scope): Cantina (Spearbit), Sherlock, Code4rena.
+- *Premium* (reference / price-anchor only): Neodyme, OtterSec, Halborn.
+
+**Quote-ask criteria:** fixed price; earliest start + lead time; auditor-weeks allocated; whether one remediation re-review is included; report-publishing terms.
 
 ### Dependency advisories (`npm audit`) — triaged 2026-06-08
 

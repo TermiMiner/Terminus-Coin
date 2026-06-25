@@ -250,7 +250,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 - [ ] All critical and high findings resolved
 - [ ] Audit report published
 
-**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer + docs, never the program); cut an `audit-scope-v1` tag on the merge commit before kickoff. Full reusable scope statement (paste into quote requests): **`~/Desktop/terminuscoin-audit-scope.md`**.
+**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer + docs, never the program); cut an `audit-scope-v1` tag on the merge commit before kickoff. Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
 
 > **Scope note for §1:** the relayer-tip market IS implemented in `claim()`. §1's "code not yet written" note is **stale** — the tip market is in scope and materially affects the quote.
 

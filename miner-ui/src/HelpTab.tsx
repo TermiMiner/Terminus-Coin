@@ -18,7 +18,11 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "Burner vs. Phantom — which should I use, and which wallets work?",
-    a: "Burner = zero-setup, browser-stored, good for trying things out. A real wallet you control = for TERM you actually care about. TERM is a standard Solana SPL token, so it works in any Solana wallet — Phantom, Solflare, Backpack, Trust Wallet, Coinbase Wallet, Exodus, OKX Wallet, Glow, and hardware wallets like Ledger (used through Phantom or Solflare). Any wallet with an “import private key” option can take your burner: connect one at the top of the page, or move a burner across (see WALLET below).",
+    a: "Use a burner to MINE and a real wallet to HOLD. The burner signs instantly in your browser, so it mines non-stop with no pop-ups. Phantom and hardware wallets (Ledger via Phantom/Solflare) are built for custody, not mining — they make you approve and simulate every claim and will often block it with a “failed to simulate” warning, so they're painful to mine with. Think of the burner as a cash drawer: mine into it, then move TERM you actually care about into a wallet you control, regularly — don't let a lot pile up in the browser. TERM is a standard Solana SPL token, so any Solana wallet holds it (Phantom, Solflare, Backpack, Trust Wallet, Coinbase Wallet, Exodus, OKX Wallet, Glow, Ledger). See WALLET below to move a burner across.",
+  },
+  {
+    q: "Can I mine with Phantom or a hardware wallet (Ledger)?",
+    a: "Not smoothly. They simulate every transaction before signing and will often block a mining claim with “failed to simulate the results of this request” — a quirk of proof-of-work claims (whose validity changes every few seconds) meeting wallet simulation. To mine a wallet you keep in Phantom, export its private key from Phantom and use IMPORT BURNER at the top of the page — it then mines autonomously like any burner, and Phantom stays perfect for holding and sending the TERM afterward.",
   },
   {
     q: "What do the ROUTE modes mean (AUTO / SELF-FUND / SHARED / LOCAL)?",
@@ -84,8 +88,9 @@ export default function HelpTab({
       <div className="help-h">WALLET — move your burner into Phantom</div>
       <div className="faq-a">
         A burner wallet's key lives in this browser only — only as safe as this device.
-        To hold TERM you care about, import it into a wallet you control (Phantom,
-        Solflare, …):
+        Treat it like a <b>cash drawer</b>: move TERM you care about into a wallet you
+        control (Phantom, Solflare, Ledger, …) <b>regularly</b>, rather than letting it
+        pile up here. To move the whole wallet across, import its key:
       </div>
       <ol className="help-steps">
         <li>Reveal and copy your burner's private key below.</li>

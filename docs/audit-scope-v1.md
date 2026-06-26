@@ -9,7 +9,7 @@ Terminus Coin (TERM) — a Solana proof-of-work SPL token. Single Anchor program
 ## Scope (in)
 
 - **`programs/terminuscoin/src/lib.rs`** — ~1,880 LOC, ~25 instructions.
-- **Stack:** Anchor 0.32.0, anchor-spl with **spl-token-2022**, `init-if-needed` feature.
+- **Stack:** Anchor 0.32.0, **classic SPL Token** (`anchor_spl::token`, `Tokenkeg…` — `Program<Token>` throughout; 82-byte mint, no extensions), `init-if-needed`. Note: anchor-spl's `spl-token-2022` cargo feature is enabled but **unused** — the program has no token-2022 code paths, accounts, or extensions.
 - **Frozen commit:** the on-chain program is unchanged since `1256c10`. Audit ref: tag **`audit-scope-v1`** — `lib.rs` is byte-identical to `1256c10` at the tag (commits after `1256c10` touch only the frontend/relayer + docs, never the program). `git checkout audit-scope-v1`.
 
 ### Subsystems to review

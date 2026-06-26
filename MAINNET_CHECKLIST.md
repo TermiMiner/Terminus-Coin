@@ -140,7 +140,7 @@ A project-operated time-boxed bootstrap relayer bridges the gap until community 
 
 **Capacity / cost ceiling:** at 1 SOL/day cap and ~0.004 SOL/wallet onboarding cost, ~250 wallets/day capacity. Over 90 days, ~22,500 wallet ceiling. Worst-case relayer bleed ~$3,000 leakable + gas; expect $1-2k actual. **Budget: $5k of operational SOL (conservative).**
 
-**TERM-tip economics (the income side):** the table above is the relayer's COST side; on mainnet it also EARNS — every non-first claim tips ≥ `MIN_TIP_TERM` (0.5 TERM) into the relayer's own token-2022 ATA (the `fee_payer_token_account`). So the wallet **drains SOL and accrues TERM**, and the operator loop is two-sided: refill SOL AND periodically **liquidate accumulated TERM tips → SOL** (sell on Raydium) to recover cost. `RELAYER_OPERATOR.md` covers the SOL-out monitoring + daily cap + refill cadence; the **TERM-tip liquidation cadence is the gap to add there.** [ ] Document it in `RELAYER_OPERATOR.md`.
+**TERM-tip economics (the income side):** the table above is the relayer's COST side; on mainnet it also EARNS — every non-first claim tips ≥ `MIN_TIP_TERM` (0.5 TERM) into the relayer's own TERM ATA (the `fee_payer_token_account`). So the wallet **drains SOL and accrues TERM**, and the operator loop is two-sided: refill SOL AND periodically **liquidate accumulated TERM tips → SOL** (sell on Raydium) to recover cost. `RELAYER_OPERATOR.md` covers the SOL-out monitoring + daily cap + refill cadence; the **TERM-tip liquidation cadence is the gap to add there.** [ ] Document it in `RELAYER_OPERATOR.md`.
 
 **Sybil gates:** same KV pattern already deployed (per-wallet quota, per-IP rate limit, daily SOL spend cap). No on-chain change.
 
@@ -327,9 +327,9 @@ The supported **mining** wallet is the in-browser **burner** (instant local sign
 
 The burner is a **HOT wallet** (secret key in `localStorage`, readable by any extension/JS on the page). Treat it like a **cash drawer**: mine into it, sweep earnings to real custody regularly, never let large value sit there.
 
-- [ ] **BUILD: in-UI "Withdraw TERM → \<address\>".** A standard SPL **token-2022** transfer from the burner's token account to a user-supplied destination (Ledger / Phantom / CEX deposit) — **no key export**. The clean custody bridge; optionally auto-sweep every N claims so the hot wallet stays near-empty. Today only **[ EXPORT KEY ]** exists — a power-user fallback where a leaked key drains the wallet forever; the sweep should be the safe default.
+- [ ] **BUILD: in-UI "Withdraw TERM → \<address\>".** A standard SPL token transfer from the burner's token account to a user-supplied destination (Ledger / Phantom / CEX deposit) — **no key export**. The clean custody bridge; optionally auto-sweep every N claims so the hot wallet stays near-empty. Today only **[ EXPORT KEY ]** exists — a power-user fallback where a leaked key drains the wallet forever; the sweep should be the safe default.
 - [ ] **Exit cleanup:** reclaim the bond (`withdraw_bond` / `withdraw_bond_term`) + residual SOL when done mining.
-- [ ] **token-2022 receiving support:** confirm target venues (especially centralized exchanges) accept token-2022 deposits before relying on it; Phantom / Solflare / Ledger handle it.
+- [ ] **Receiving venue reality:** TERM is a **classic SPL token** (universally supported by Solana wallets), but **unlisted** — a CEX can't accept TERM deposits until it lists the token, so realistic sweep destinations are self-custody wallets (Phantom / Solflare / Ledger).
 
 ---
 

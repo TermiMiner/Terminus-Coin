@@ -140,6 +140,8 @@ A project-operated time-boxed bootstrap relayer bridges the gap until community 
 
 **Capacity / cost ceiling:** at 1 SOL/day cap and ~0.004 SOL/wallet onboarding cost, ~250 wallets/day capacity. Over 90 days, ~22,500 wallet ceiling. Worst-case relayer bleed ~$3,000 leakable + gas; expect $1-2k actual. **Budget: $5k of operational SOL (conservative).**
 
+**TERM-tip economics (the income side):** the table above is the relayer's COST side; on mainnet it also EARNS — every non-first claim tips ≥ `MIN_TIP_TERM` (0.5 TERM) into the relayer's own token-2022 ATA (the `fee_payer_token_account`). So the wallet **drains SOL and accrues TERM**, and the operator loop is two-sided: refill SOL AND periodically **liquidate accumulated TERM tips → SOL** (sell on Raydium) to recover cost. `RELAYER_OPERATOR.md` covers the SOL-out monitoring + daily cap + refill cadence; the **TERM-tip liquidation cadence is the gap to add there.** [ ] Document it in `RELAYER_OPERATOR.md`.
+
 **Sybil gates:** same KV pattern already deployed (per-wallet quota, per-IP rate limit, daily SOL spend cap). No on-chain change.
 
 **Sunset signaling:**
@@ -318,6 +320,16 @@ Provider: Helius / Triton / QuickNode (free devnet tiers; paid mainnet tiers). U
 - [x] **One-click start for newcomers** — opening the page and pressing **Start mining** should Just Work with everything on AUTO: auto-generate a burner when no wallet is connected, keep `modePreference = AUTO`, and route automatically (relayer for a 0-SOL burner). Goal: zero config and zero crypto knowledge required to begin mining.
 - [ ] **Load distribution across ≥2 production relayers** (deferred; not testable until a second production relayer exists). Relayer selection is currently deterministic *prefer-home* — cheapest-feasible, near-ties broken toward the bundled/same-origin relayer; the randomized weighting in `selectCheapest` was removed as dead code. When a second relayer is real, design a ranking signal (health / least-loaded / reputation) and implement it as a STABLE per-probe choice held in state — **never a render-time `Math.random`** (selection runs in App's render body, so random there re-rolls the relayer on every re-render).
 - [ ] **Cached chain-state endpoint (RPC cost lever)** (deferred) — every miner independently fetches GlobalState (difficulty + `last_hash`) each round, so RPC read-load scales linearly with concurrent miners. Serve a short-cached GlobalState (~1–2s TTL — the stale-nonce retry already tolerates brief staleness) from the relayer so chain-state reads become ~constant regardless of miner count. The single biggest RPC-bill lever at scale.
+
+### Mining wallet & custody — the burner "cash drawer" model
+
+The supported **mining** wallet is the in-browser **burner** (instant local signing, fully autonomous). Phantom / hardware wallets are for **custody, not mining**: they simulate every tx before signing and block ones they can't simulate or that look likely to fail — and a PoW `claim` is fragile to that (validity hinges on a rotating `last_hash`). Devnet shows it as Phantom's *"failed to simulate the results of this request"* (devnet-RPC flakiness / blockhash propagation); on mainnet that eases, but the *staleness* flavor worsens as miner count grows and `last_hash` rotates faster. Net: **Phantom is not a viable continuous miner** — say so in the UI so users don't fight it. (A Phantom-held key can be imported as a burner — **[ IMPORT BURNER ]** accepts Phantom's base58 export — to mine autonomously.)
+
+The burner is a **HOT wallet** (secret key in `localStorage`, readable by any extension/JS on the page). Treat it like a **cash drawer**: mine into it, sweep earnings to real custody regularly, never let large value sit there.
+
+- [ ] **BUILD: in-UI "Withdraw TERM → \<address\>".** A standard SPL **token-2022** transfer from the burner's token account to a user-supplied destination (Ledger / Phantom / CEX deposit) — **no key export**. The clean custody bridge; optionally auto-sweep every N claims so the hot wallet stays near-empty. Today only **[ EXPORT KEY ]** exists — a power-user fallback where a leaked key drains the wallet forever; the sweep should be the safe default.
+- [ ] **Exit cleanup:** reclaim the bond (`withdraw_bond` / `withdraw_bond_term`) + residual SOL when done mining.
+- [ ] **token-2022 receiving support:** confirm target venues (especially centralized exchanges) accept token-2022 deposits before relying on it; Phantom / Solflare / Ledger handle it.
 
 ---
 

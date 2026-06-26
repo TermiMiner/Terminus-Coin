@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { useChainState, SUPPLY_CAP } from "./useChainState";
+import { PublicKey } from "@solana/web3.js";
+import { useChainState, SUPPLY_CAP, MINT_PDA } from "./useChainState";
 import { useMiner } from "./useMiner";
 import ClaimReveal from "./ClaimReveal";
 import HelpTab from "./HelpTab";
@@ -22,6 +23,7 @@ import {
 } from "./relayerAdapter";
 import { useStaking } from "./useStaking";
 import { executeStakingAction } from "./stakingActions";
+import { sweepTerm, validateSweepDestination, destNeedsAta, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS } from "./sweepTerm";
 import logoUrl from "./assets/logo.jpg";
 
 // First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
@@ -542,6 +544,50 @@ export default function App() {
   const [stakeBusy, setStakeBusy] = useState<null | "stake" | "unstake" | "claim">(null);
   const [stakeMsg, setStakeMsg] = useState<string | null>(null);
 
+  // ── Sweep (withdraw TERM) state + action ──
+  const [sweepDest, setSweepDest] = useState("");
+  const [sweepAmount, setSweepAmount] = useState("");
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const [sweepMsg, setSweepMsg] = useState<string | null>(null);
+  const [sweepCollapsed, setSweepCollapsed] = useState(true);
+
+  async function runSweep() {
+    if (!connection || !activeWallet.publicKey || !activeWallet.signTransaction) return;
+    let destPk: PublicKey;
+    try { destPk = new PublicKey(sweepDest.trim()); }
+    catch { setSweepMsg("Invalid destination address."); return; }
+    const n = Number(sweepAmount);
+    if (!Number.isFinite(n) || n <= 0) { setSweepMsg("Enter a positive amount."); return; }
+    const amountRaw = BigInt(Math.round(n * 1_000_000));
+    if (amountRaw > staking.walletBalance) { setSweepMsg("Amount exceeds your liquid TERM balance."); return; }
+    setSweepBusy(true); setSweepMsg(null);
+    try {
+      // Loss-prevention: reject a token-account / self destination before sending.
+      const reason = await validateSweepDestination(connection, destPk, activeWallet.publicKey);
+      if (reason) { setSweepMsg(reason); return; }
+      // SOL sufficiency (fee + recipient ATA rent if it must be created).
+      const needsAta = await destNeedsAta(connection, MINT_PDA, destPk);
+      const needLamports = SWEEP_FEE_LAMPORTS + (needsAta ? ATA_RENT_LAMPORTS : 0);
+      if (activeSolBalance !== null && activeSolBalance < needLamports) {
+        setSweepMsg(`Need ~${(needLamports / 1e9).toFixed(4)} SOL (fee${needsAta ? " + recipient account rent" : ""}); this wallet has ${(activeSolBalance / 1e9).toFixed(4)}. Top up a little SOL.`);
+        return;
+      }
+      const ok = confirm(
+        "WITHDRAW TERM — IRREVERSIBLE\n\n" +
+        `Send ${n} TERM\nto ${destPk.toBase58()}\n\n` +
+        "Double-check the address — a wrong address means permanent loss. Continue?"
+      );
+      if (!ok) return;
+      const sig = await sweepTerm(connection, activeWallet, MINT_PDA, destPk, amountRaw);
+      setSweepMsg(`Sent ${n} TERM. tx ${sig.slice(0, 16)}…`);
+      setSweepAmount("");
+    } catch (err: any) {
+      setSweepMsg(`Failed: ${(err?.message ?? String(err)).slice(0, 160)}`);
+    } finally {
+      setSweepBusy(false);
+    }
+  }
+
   function fmtTerm(raw: bigint): string {
     const whole = raw / 1_000_000n;
     const frac = raw % 1_000_000n;
@@ -1058,6 +1104,75 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* WITHDRAW TERM — sweep liquid TERM to a real wallet (custody bridge) */}
+      {activeWallet.publicKey && (
+        <div className="stats-section">
+          <button
+            className="stats-header"
+            onClick={() => setSweepCollapsed((v) => !v)}
+            aria-expanded={!sweepCollapsed}
+          >
+            <span>WITHDRAW TERM {sweepCollapsed ? "▸" : "▾"}</span>
+            {sweepCollapsed && (
+              <span className="stats-summary">{fmtTerm(staking.walletBalance)} TERM liquid</span>
+            )}
+          </button>
+          {!sweepCollapsed && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 4px" }}>
+              <div className="log-line dim">
+                Send your <b>liquid</b> TERM to a wallet you control (Phantom / Solflare / Ledger).
+                Irreversible — double-check the address. Staked TERM and your SOL bond are not included.
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="wallet-address">TO:</span>
+                <input
+                  className="stake-input"
+                  placeholder="destination wallet address"
+                  value={sweepDest}
+                  onChange={(e) => setSweepDest(e.target.value)}
+                  disabled={sweepBusy}
+                  style={{ minWidth: 340, flex: 1 }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span className="wallet-address">AMOUNT:</span>
+                <input
+                  className="stake-input"
+                  type="number"
+                  placeholder="0.0"
+                  value={sweepAmount}
+                  onChange={(e) => setSweepAmount(e.target.value)}
+                  disabled={sweepBusy}
+                  min={0}
+                  step="0.000001"
+                />
+                <button
+                  className="btn"
+                  disabled={sweepBusy || staking.walletBalance === 0n}
+                  onClick={() => setSweepAmount(`${staking.walletBalance / 1_000_000n}.${(staking.walletBalance % 1_000_000n).toString().padStart(6, "0")}`)}
+                  title="Liquid balance only — excludes staked TERM and your SOL bond"
+                >
+                  [ MAX (liquid) ]
+                </button>
+                <span className="wallet-address" style={{ color: "var(--grey)" }}>
+                  {fmtTerm(staking.walletBalance)} TERM available
+                </span>
+              </div>
+              <div>
+                <button
+                  className="btn"
+                  disabled={sweepBusy || !sweepDest.trim() || !sweepAmount || staking.walletBalance === 0n}
+                  onClick={runSweep}
+                >
+                  {sweepBusy ? "[ SENDING… ]" : "[ SEND TERM ]"}
+                </button>
+              </div>
+              {sweepMsg && <div className="log-line dim" style={{ paddingTop: 4 }}>{sweepMsg}</div>}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Log pane */}
       <div className="log-pane" ref={logRef}>

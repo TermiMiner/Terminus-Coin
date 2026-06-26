@@ -6,37 +6,9 @@ import idl from "../idl/terminuscoin.json";
 import { MINT_PDA } from "./useChainState";
 import type { MinerWallet } from "./burnerWallet";
 import type { BroadcastAdapter } from "./relayerAdapter";
+import { confirmOrCheckLanded } from "./confirmTx";
 
 export type StakingAction = "stake" | "unstake" | "claim_yield";
-
-// confirmTransaction throws "block height exceeded" when the client gives up
-// polling, NOT when the tx fails — it may have already landed. Re-query
-// signature status directly before treating expiration as failure.
-async function confirmOrCheckLanded(
-  connection: Connection,
-  sig: string,
-  blockhash: string,
-  lastValidBlockHeight: number,
-): Promise<void> {
-  try {
-    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
-    return;
-  } catch (err: any) {
-    const msg = err?.message ?? String(err);
-    if (!/block height exceeded|has expired/i.test(msg)) throw err;
-    const { value } = await connection.getSignatureStatuses([sig], { searchTransactionHistory: true });
-    const status = value?.[0];
-    if (status && !status.err && (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized")) {
-      return;
-    }
-    if (status?.err) {
-      const e = new Error(`Transaction failed on chain: ${JSON.stringify(status.err)}`);
-      (e as any).logs = (status as any).logs;
-      throw e;
-    }
-    throw err;
-  }
-}
 
 export interface StakingActionResult {
   signature: string;

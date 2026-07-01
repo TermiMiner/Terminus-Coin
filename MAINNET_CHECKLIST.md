@@ -327,8 +327,8 @@ The supported **mining** wallet is the in-browser **burner** (instant local sign
 
 The burner is a **HOT wallet** (secret key in `localStorage`, readable by any extension/JS on the page). Treat it like a **cash drawer**: mine into it, sweep earnings to real custody regularly, never let large value sit there.
 
-- [ ] **BUILD: in-UI "Withdraw TERM → \<address\>".** A standard SPL token transfer from the burner's token account to a user-supplied destination (Ledger / Phantom / CEX deposit) — **no key export**. The clean custody bridge; optionally auto-sweep every N claims so the hot wallet stays near-empty. Today only **[ EXPORT KEY ]** exists — a power-user fallback where a leaked key drains the wallet forever; the sweep should be the safe default. **Full scope + guards: [`docs/term-sweep-scope.md`](docs/term-sweep-scope.md).**
-- [ ] **Exit cleanup:** reclaim the bond (`withdraw_bond` / `withdraw_bond_term`) + residual SOL when done mining.
+- [x] **In-UI "Withdraw TERM → \<address\>" — DONE** (Phase 1; commit `a501066`, live + on-chain-tested 2026-06-26). Classic SPL `transferChecked` from the wallet's token account to a self-custody destination (Phantom / Solflare / Ledger) — **no key export**; guards a token-account/self destination + SOL sufficiency + an irreversible confirm. **Stopping at Phase 1** — the full-exit bundle + auto-sweep (`docs/term-sweep-scope.md` Phase 2) are **descoped** to avoid feature creep. Legacy **[ EXPORT KEY ]** stays as a power-user fallback. Scope + guards: [`docs/term-sweep-scope.md`](docs/term-sweep-scope.md).
+- **Exit cleanup (bond + residual SOL) — descoped** (it's the Phase 2 full-exit we're not building). The ~0.001 SOL bond stays recoverable on-chain via `withdraw_bond` / `withdraw_bond_term` for anyone who wants it; a burner's small residual SOL is left as-is — not worth dedicated UI at this value.
 - [ ] **Receiving venue reality:** TERM is a **classic SPL token** (universally supported by Solana wallets), but **unlisted** — a CEX can't accept TERM deposits until it lists the token, so realistic sweep destinations are self-custody wallets (Phantom / Solflare / Ledger).
 
 ---

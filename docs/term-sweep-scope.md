@@ -1,6 +1,10 @@
 # TERM Sweep — build scope (mainnet custody bridge)
 
-Status: **scoped, not built.** Phase 1 is a focused branch; Phase 2 is deferred.
+Status: **Phase 1 SHIPPED** — commit `a501066`, live + on-chain-tested 2026-06-26.
+**Phase 2 is descoped — Phase 1 is the intended stopping point.** The manual sweep
+is the whole custody bridge; the extras below aren't worth the added surface area
+(deliberate scope discipline). The Phase 2 design is retained only so a future
+decision, if one ever arises, starts from a plan rather than a blank page.
 Tracked in `MAINNET_CHECKLIST.md` §7 ("Mining wallet & custody").
 
 ## Why
@@ -45,7 +49,7 @@ drawer; the sweep empties it.
 1. **MAX = liquid only.** `staking.walletBalance` is *TERM in the ATA*, **not**
    staked TERM (staked lives in the stake account). Label the control **"MAX
    (liquid balance)"** so a user doesn't think MAX emptied everything — staked +
-   bond are excluded (those are Phase 2's full-exit).
+   bond are excluded (reclaiming them is descoped — see the Phase 2 note).
 2. **Destination must be a wallet, not a token account.** If a user pastes an
    **ATA** by mistake, deriving "ATA-of-an-ATA" sends TERM into the void
    (irreversible). Before enabling Send, validate the destination is
@@ -79,7 +83,12 @@ Sweep burner → second wallet: balance moves, dest ATA auto-created, sig lands.
 Cases: insufficient-SOL path; MAX + partial amounts; **destination = an ATA
 (must be blocked)**; destination = self (must be disabled); amount > balance.
 
-## Phase 2 — deferred
+## Phase 2 — NOT planned (descoped 2026-06-30)
+
+**Deliberately not building these.** Phase 1 covers the custody need; the extra
+surface (an on-chain unstake + `withdraw_bond` bundle, and a background auto-sweep
+loop) isn't justified — stopping here avoids feature creep. Recorded only as a
+starting design if a concrete need ever revives it:
 
 - **"Full exit" one-click:** sweep liquid TERM **+** `withdraw_bond` (reclaim the
   SOL bond) **+** transfer residual SOL to the destination. (Staked TERM must be

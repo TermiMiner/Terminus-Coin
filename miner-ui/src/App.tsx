@@ -23,7 +23,7 @@ import {
 } from "./relayerAdapter";
 import { useStaking } from "./useStaking";
 import { executeStakingAction } from "./stakingActions";
-import { sweepTerm, validateSweepDestination, destNeedsAta, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS } from "./sweepTerm";
+import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS } from "./sweepTerm";
 import logoUrl from "./assets/logo.jpg";
 
 // First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
@@ -556,10 +556,13 @@ export default function App() {
     let destPk: PublicKey;
     try { destPk = new PublicKey(sweepDest.trim()); }
     catch { setSweepMsg("Invalid destination address."); return; }
-    const n = Number(sweepAmount);
-    if (!Number.isFinite(n) || n <= 0) { setSweepMsg("Enter a positive amount."); return; }
-    const amountRaw = BigInt(Math.round(n * 1_000_000));
+    const amountRaw = parseTermAmount(sweepAmount);
+    if (amountRaw === null) { setSweepMsg("Enter a valid amount — numbers only, up to 6 decimals."); return; }
+    if (amountRaw <= 0n) { setSweepMsg("Enter a positive amount (minimum 0.000001 TERM)."); return; }
     if (amountRaw > staking.walletBalance) { setSweepMsg("Amount exceeds your liquid TERM balance."); return; }
+    // Exact amount that will be sent (no float) — shown in the confirm so what's
+    // confirmed == what's sent.
+    const amountDisplay = `${amountRaw / 1_000_000n}.${(amountRaw % 1_000_000n).toString().padStart(6, "0")}`;
     setSweepBusy(true); setSweepMsg(null);
     try {
       // Loss-prevention: reject a token-account / self destination before sending.
@@ -568,18 +571,23 @@ export default function App() {
       // SOL sufficiency (fee + recipient ATA rent if it must be created).
       const needsAta = await destNeedsAta(connection, MINT_PDA, destPk);
       const needLamports = SWEEP_FEE_LAMPORTS + (needsAta ? ATA_RENT_LAMPORTS : 0);
-      if (activeSolBalance !== null && activeSolBalance < needLamports) {
-        setSweepMsg(`Need ~${(needLamports / 1e9).toFixed(4)} SOL (fee${needsAta ? " + recipient account rent" : ""}); this wallet has ${(activeSolBalance / 1e9).toFixed(4)}. Top up a little SOL.`);
+      // Fresh SOL read at send time — the polled activeSolBalance can be null
+      // (initial render / RPC error) or stale, and treating "unknown" as
+      // sufficient would defeat this guard for the exact near-empty burner it's
+      // meant to protect.
+      const solBalance = await connection.getBalance(activeWallet.publicKey!);
+      if (solBalance < needLamports) {
+        setSweepMsg(`Need ~${(needLamports / 1e9).toFixed(4)} SOL (fee${needsAta ? " + recipient account rent" : ""}); this wallet has ${(solBalance / 1e9).toFixed(4)}. Top up a little SOL.`);
         return;
       }
       const ok = confirm(
         "WITHDRAW TERM — IRREVERSIBLE\n\n" +
-        `Send ${n} TERM\nto ${destPk.toBase58()}\n\n` +
+        `Send ${amountDisplay} TERM\nto ${destPk.toBase58()}\n\n` +
         "Double-check the address — a wrong address means permanent loss. Continue?"
       );
       if (!ok) return;
       const sig = await sweepTerm(connection, activeWallet, MINT_PDA, destPk, amountRaw);
-      setSweepMsg(`Sent ${n} TERM. tx ${sig.slice(0, 16)}…`);
+      setSweepMsg(`Sent ${amountDisplay} TERM. tx ${sig.slice(0, 16)}…`);
       setSweepAmount("");
     } catch (err: any) {
       setSweepMsg(`Failed: ${(err?.message ?? String(err)).slice(0, 160)}`);

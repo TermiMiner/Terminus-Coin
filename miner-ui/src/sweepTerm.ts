@@ -6,6 +6,7 @@
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
   createTransferCheckedInstruction,
@@ -22,6 +23,22 @@ export const SWEEP_FEE_LAMPORTS = 5_000;
 export const ATA_RENT_LAMPORTS = 2_039_280; // classic SPL token ATA rent-exempt min
 
 /**
+ * Parse a user-typed TERM amount (plain decimal, ≤6 places) to raw u64 units,
+ * WITHOUT float error — parses the string directly. Returns null for anything
+ * that isn't a plain non-negative decimal with ≤6 fractional digits (rejects
+ * "1e3", "0x10", negatives, >6 decimals, blanks, junk). Callers reject `<= 0n`.
+ * Using Number()*1e6 would drift (e.g. 0.29*1e6 = 289999.9999…) and could round
+ * an amount up past the balance — string parsing is exact.
+ */
+export function parseTermAmount(input: string): bigint | null {
+  const t = input.trim();
+  if (t === "" || t === "." || !/^\d*\.?\d*$/.test(t)) return null;
+  const [whole, frac = ""] = t.split(".");
+  if (frac.length > TERM_DECIMALS) return null;
+  return BigInt(whole || "0") * 1_000_000n + BigInt((frac + "000000").slice(0, TERM_DECIMALS));
+}
+
+/**
  * Validate a sweep destination. Returns a human reason if it's unsafe, else null.
  * The critical guard: a user pasting a TOKEN ACCOUNT (e.g. their TERM ATA)
  * instead of their wallet address would otherwise send into an ATA-of-an-ATA and
@@ -34,12 +51,17 @@ export async function validateSweepDestination(
 ): Promise<string | null> {
   if (dest.equals(source)) return "That's this wallet — pick a different destination.";
   const info = await connection.getAccountInfo(dest);
-  if (info && info.owner.equals(TOKEN_PROGRAM_ID)) {
+  if (info && (info.owner.equals(TOKEN_PROGRAM_ID) || info.owner.equals(TOKEN_2022_PROGRAM_ID))) {
     return "That looks like a token account, not a wallet. Paste your wallet's address (it owns the token account), not the token account itself.";
   }
+  // Off-curve = a program / multisig (e.g. Squads) address, not a normal wallet.
+  // getAssociatedTokenAddressSync would throw TokenOwnerOffCurveError on it, so
+  // reject up front with a clear message instead of a cryptic crash. Phase 1
+  // sends only to normal wallets.
+  if (!PublicKey.isOnCurve(dest.toBytes())) {
+    return "That's an off-curve address (a program or multisig / Squads vault), not a normal wallet. Send TERM to a self-custody wallet (Phantom / Solflare / Ledger), then move it from there.";
+  }
   // null (unfunded wallet) or system-owned (normal wallet) → allowed.
-  // Other program-owned accounts are unusual but permitted; the confirm dialog
-  // is the backstop.
   return null;
 }
 

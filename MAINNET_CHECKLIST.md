@@ -140,7 +140,7 @@ A project-operated time-boxed bootstrap relayer bridges the gap until community 
 
 **Capacity / cost ceiling:** at 1 SOL/day cap and ~0.004 SOL/wallet onboarding cost, ~250 wallets/day capacity. Over 90 days, ~22,500 wallet ceiling. Worst-case relayer bleed ~$3,000 leakable + gas; expect $1-2k actual. **Budget: $5k of operational SOL (conservative).**
 
-**TERM-tip economics (the income side):** the table above is the relayer's COST side; on mainnet it also EARNS — every non-first claim tips ≥ `MIN_TIP_TERM` (0.5 TERM) into the relayer's own TERM ATA (the `fee_payer_token_account`). So the wallet **drains SOL and accrues TERM**, and the operator loop is two-sided: refill SOL AND periodically **liquidate accumulated TERM tips → SOL** (sell on Raydium) to recover cost. `RELAYER_OPERATOR.md` covers the SOL-out monitoring + daily cap + refill cadence; the **TERM-tip liquidation cadence is the gap to add there.** [ ] Document it in `RELAYER_OPERATOR.md`.
+**TERM-tip economics (the income side):** the table above is the relayer's COST side; on mainnet it also EARNS — every non-first claim tips ≥ `MIN_TIP_TERM` (0.5 TERM) into the relayer's own TERM ATA (the `fee_payer_token_account`). So the wallet **drains SOL and accrues TERM**, and the operator loop is two-sided: refill SOL AND periodically **liquidate accumulated TERM tips → SOL** (sell on Raydium) to recover cost. `RELAYER_OPERATOR.md` covers the SOL-out monitoring + daily cap + refill cadence, and now also the **TERM-tip income & liquidation cadence** (documented 2026-07-13, §"TERM-tip income & liquidation").
 
 **Sybil gates:** same KV pattern already deployed (per-wallet quota, per-IP rate limit, daily SOL spend cap). No on-chain change.
 
@@ -258,13 +258,13 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 **Firm shortlist + quote-ask criteria:** see [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md) — the tiered shortlist (budget / contest / premium) and the five quote-ask items live there, so there's a single source of truth.
 
-### Dependency advisories (`npm audit`) — triaged 2026-06-08
+### Dependency advisories (`npm audit`) — triaged 2026-06-08, re-triaged 2026-07-13
 
 `miner-ui` after `npm audit fix` (non-breaking): **9 production advisories (3 high, 6 moderate)**, all transitive in the Solana SDK / wallet-adapter chain with no non-breaking fix. Triaged, not ignored:
 
 - **3 high — `bigint-buffer` / `@solana/buffer-layout-utils` / `@solana/spl-token`** (buffer overflow in `bigint-buffer`). npm's only offered "fix" is downgrading `@solana/spl-token` to **0.1.8** (pre-0.2 API — would break the app); not viable. `bigint-buffer` (de)serializes fixed-width u64s from program-defined layouts, not attacker-controlled arbitrary-length buffers, so real exposure is low. Upstream-blocked — track `@solana/spl-token` dropping `bigint-buffer`.
 - **6 moderate — `@solana/web3.js`, `@coral-xyz/anchor`, `jayson`, `uuid`, `@solana/wallet-adapter-solflare`, `@solflare-wallet/sdk`.** `web3.js`/`anchor`/`jayson`/`uuid` have **no fix**; the solflare pair only "fix" via a breaking downgrade. All transitive; accepted + tracked.
-- **Fixed 2026-06-08:** `ws` 8.20.0 → 8.21.0 (uninitialized-memory disclosure) via `npm audit fix`; build re-verified green.
+- **Cleared via `npm audit fix` (non-breaking, lockfile-only; build re-verified green each time):** `ws` 8.20.0 → 8.21.0 (uninitialized-memory disclosure, 2026-06-08). **Re-triage 2026-07-13** cleared a *new* `ws` high-sev advisory (`GHSA-96hv-2xvq-fx4p`, memory-exhaustion DoS) plus several build-tooling advisories — the production residual returned to the same **9 (3 high / 6 moderate)** listed above. No shipped-code residual gained a non-breaking fix.
 - **Dev-only (NOT shipped):** the `@vercel/node` chain (`undici`, `path-to-regexp`, `minimatch`) and `vite-plugin-node-polyfills` (`elliptic`, `crypto-browserify`) — build/runtime tooling, absent from the browser bundle; the deployed serverless runtime is Vercel-managed.
 
 **For the audit firm:** these are known, upstream-blocked transitive advisories flagged for awareness, not action items — the on-chain program (the audit's real scope) has no npm dependency surface. Re-run `npm audit` at each Solana SDK bump and adopt any that gain a non-breaking fix.

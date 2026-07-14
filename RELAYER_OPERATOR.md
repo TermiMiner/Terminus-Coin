@@ -129,6 +129,20 @@ Visit `/api/relayer-info?wallet=<your-pubkey>` to see at a glance:
 
 Set a reminder to check this once a day until you have a feel for the drain rate. Re-fund when balance falls below 1 day's worth of drain.
 
+### TERM-tip income & liquidation (mainnet)
+
+The monitoring above tracks the **SOL you spend**; on mainnet the relayer also **earns TERM**. Every repeat (non-first) claim it broadcasts tips at least `MIN_TIP_TERM` (default 0.5 TERM) into the relayer's own TERM token account (the claim's `fee_payer_token_account`). So the wallet **drains SOL and accrues TERM** — cost recovery only closes the loop when you convert that TERM back to SOL.
+
+Operator loop:
+
+1. **Watch the TERM balance** alongside SOL — the relayer pubkey's TERM token account (any explorer, or `spl-token balance <TERM_MINT> --owner <RELAYER_PUBKEY>`).
+2. **Liquidate periodically**: swap accrued TERM → SOL on Raydium (where TERM has liquidity), then send the SOL back to the relayer to keep it funded.
+3. **Cadence** follows the drain rate — liquidate when accrued TERM is worth a few days of SOL spend (don't sell dust constantly, don't let a large TERM balance sit unhedged). On a quiet relayer that may be weekly or less.
+
+**Floor vs price:** `MIN_TIP_TERM` is the per-claim cost-recovery floor and must stay ≥ a repeat claim's SOL cost (~5k lamports + slack) at the current TERM/SOL price. If TERM falls enough that 0.5 TERM no longer covers a claim, raise `MIN_TIP_TERM` (env var, no redeploy) or the relayer runs at a loss — a manual watch; there's no on-chain oracle tying the floor to price (deliberate — see `MAINNET_CHECKLIST.md` §"Bootstrap relayer").
+
+**Bootstrap note:** first claims are subsidized (tip 0), and in `BOOTSTRAP_MODE` so is the launch window — so early on the relayer accrues little TERM and mostly spends SOL; TERM income ramps as repeat claims dominate.
+
 ### Detecting abuse
 
 Symptoms of an attack on your relayer:

@@ -23,7 +23,7 @@ import {
 } from "./relayerAdapter";
 import { useStaking } from "./useStaking";
 import { executeStakingAction } from "./stakingActions";
-import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS } from "./sweepTerm";
+import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS, FEE_PAYER_RENT_FLOOR_LAMPORTS } from "./sweepTerm";
 import logoUrl from "./assets/logo.jpg";
 
 // First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
@@ -570,14 +570,17 @@ export default function App() {
       if (reason) { setSweepMsg(reason); return; }
       // SOL sufficiency (fee + recipient ATA rent if it must be created).
       const needsAta = await destNeedsAta(connection, MINT_PDA, destPk);
-      const needLamports = SWEEP_FEE_LAMPORTS + (needsAta ? ATA_RENT_LAMPORTS : 0);
+      // fee + (recipient ATA rent if created) + the fee-payer's own rent-exempt
+      // floor: Solana rejects a tx that leaves the payer rent-paying
+      // (InsufficientFundsForRent), so the wallet must END above the floor.
+      const needLamports = SWEEP_FEE_LAMPORTS + (needsAta ? ATA_RENT_LAMPORTS : 0) + FEE_PAYER_RENT_FLOOR_LAMPORTS;
       // Fresh SOL read at send time — the polled activeSolBalance can be null
       // (initial render / RPC error) or stale, and treating "unknown" as
       // sufficient would defeat this guard for the exact near-empty burner it's
       // meant to protect.
       const solBalance = await connection.getBalance(activeWallet.publicKey!);
       if (solBalance < needLamports) {
-        setSweepMsg(`Need ~${(needLamports / 1e9).toFixed(4)} SOL (fee${needsAta ? " + recipient account rent" : ""}); this wallet has ${(solBalance / 1e9).toFixed(4)}. Top up a little SOL.`);
+        setSweepMsg(`Need ~${(needLamports / 1e9).toFixed(4)} SOL (fee${needsAta ? " + recipient account rent" : ""} + this wallet's rent-exempt minimum); this wallet has ${(solBalance / 1e9).toFixed(4)}. Top up a little SOL.`);
         return;
       }
       const ok = confirm(

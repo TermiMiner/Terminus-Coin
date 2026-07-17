@@ -22,6 +22,13 @@ export const TERM_DECIMALS = 6;
 export const SWEEP_FEE_LAMPORTS = 5_000;
 export const ATA_RENT_LAMPORTS = 2_039_280; // classic SPL token ATA rent-exempt min
 
+// A tx may not leave a writable system account (our fee payer) RENT-PAYING:
+// 0 < balance < this floor is rejected with InsufficientFundsForRent. The sweep
+// never drains SOL to exactly 0, so the wallet must END above this floor —
+// budget it on top of fee + rent in the SOL guard, or the guard passes a tx the
+// node then rejects. (= getMinimumBalanceForRentExemption(0).)
+export const FEE_PAYER_RENT_FLOOR_LAMPORTS = 890_880;
+
 /**
  * Parse a user-typed TERM amount (plain decimal, ≤6 places) to raw u64 units,
  * WITHOUT float error — parses the string directly. Returns null for anything
@@ -42,7 +49,12 @@ export function parseTermAmount(input: string): bigint | null {
  * Validate a sweep destination. Returns a human reason if it's unsafe, else null.
  * The critical guard: a user pasting a TOKEN ACCOUNT (e.g. their TERM ATA)
  * instead of their wallet address would otherwise send into an ATA-of-an-ATA and
- * lose the funds. We also block sending to self.
+ * lose the funds. We also block sending to self, programs, and off-curve keys.
+ *
+ * SCOPE: this is a best-effort UX safety net, not a security boundary. It
+ * catches the STRUCTURAL paste mistakes (program / mint / token account /
+ * off-curve); it cannot catch a valid-but-wrong normal wallet — the irreversible
+ * full-address confirm dialog is the final backstop for that.
  */
 export async function validateSweepDestination(
   connection: Connection,
@@ -51,15 +63,29 @@ export async function validateSweepDestination(
 ): Promise<string | null> {
   if (dest.equals(source)) return "That's this wallet — pick a different destination.";
   const info = await connection.getAccountInfo(dest);
-  if (info && (info.owner.equals(TOKEN_PROGRAM_ID) || info.owner.equals(TOKEN_2022_PROGRAM_ID))) {
-    return "That looks like a token account, not a wallet. Paste your wallet's address (it owns the token account), not the token account itself.";
+  // PROGRAM addresses are ordinary ON-curve ed25519 keys (vanity-generated), so
+  // the on-curve check below does NOT catch them — and an ATA derives fine for
+  // one, which would strand the TERM (nobody can ever sign as a program id).
+  // The executable flag is the reliable tell.
+  if (info?.executable) {
+    return "That's a program's address, not a wallet — TERM sent there would be unrecoverable. Paste your wallet's address.";
   }
-  // Off-curve = a program / multisig (e.g. Squads) address, not a normal wallet.
-  // getAssociatedTokenAddressSync would throw TokenOwnerOffCurveError on it, so
-  // reject up front with a clear message instead of a cryptic crash. Phase 1
-  // sends only to normal wallets.
+  if (info && (info.owner.equals(TOKEN_PROGRAM_ID) || info.owner.equals(TOKEN_2022_PROGRAM_ID))) {
+    // 82-byte data = a MINT (e.g. the TERM mint itself — a common explorer
+    // copy); anything else = a token account. Same block, different fix advice.
+    // NB: classic-SPL heuristic — a token-2022 mint WITH extensions is >82B and
+    // gets the token-account wording instead; still blocked, just softer advice.
+    // TERM itself is a classic 82-byte mint, so the realistic case is exact.
+    return info.data.length === 82
+      ? "That's the token's mint address, not a wallet. Paste your wallet's address instead."
+      : "That looks like a token account, not a wallet. Paste your wallet's address (it owns the token account), not the token account itself.";
+  }
+  // Off-curve = not a normal wallet key: either a token account that doesn't
+  // exist on-chain yet (the most common paste mistake) or a program-derived /
+  // multisig (e.g. Squads vault) address. getAssociatedTokenAddressSync would
+  // throw TokenOwnerOffCurveError on it, so reject up front with guidance.
   if (!PublicKey.isOnCurve(dest.toBytes())) {
-    return "That's an off-curve address (a program or multisig / Squads vault), not a normal wallet. Send TERM to a self-custody wallet (Phantom / Solflare / Ledger), then move it from there.";
+    return "That's an off-curve address — a token account or a program/multisig (Squads) vault, not a normal wallet. Paste the OWNING wallet's address (Phantom / Solflare / Ledger).";
   }
   // null (unfunded wallet) or system-owned (normal wallet) → allowed.
   return null;

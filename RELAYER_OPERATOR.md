@@ -139,7 +139,7 @@ Operator loop:
 2. **Liquidate periodically**: swap accrued TERM → SOL on Raydium (where TERM has liquidity), then send the SOL back to the relayer to keep it funded.
 3. **Cadence** follows the drain rate — liquidate when accrued TERM is worth a few days of SOL spend (don't sell dust constantly, don't let a large TERM balance sit unhedged). On a quiet relayer that may be weekly or less.
 
-**Floor vs price:** `MIN_TIP_TERM` is the per-claim cost-recovery floor and must stay ≥ a repeat claim's SOL cost (~5k lamports + slack) at the current TERM/SOL price. If TERM falls enough that 0.5 TERM no longer covers a claim, raise `MIN_TIP_TERM` (env var, no redeploy) or the relayer runs at a loss — a manual watch; there's no on-chain oracle tying the floor to price (deliberate — see `MAINNET_CHECKLIST.md` §"Bootstrap relayer").
+**Floor vs price:** `MIN_TIP_TERM` is the per-claim cost-recovery floor and must stay ≥ a repeat claim's SOL cost (~5k lamports + slack) at the current TERM/SOL price. If TERM falls enough that 0.5 TERM no longer covers a claim, raise `MIN_TIP_TERM` — set the env var in Vercel **and redeploy** (env changes don't reach already-deployed functions, and the value is read at function cold start) — or the relayer runs at a loss — a manual watch; there's no on-chain oracle tying the floor to price (deliberate — see `MAINNET_CHECKLIST.md` §"Bootstrap relayer").
 
 **Bootstrap note:** first claims are subsidized (tip 0), and in `BOOTSTRAP_MODE` so is the launch window — so early on the relayer accrues little TERM and mostly spends SOL; TERM income ramps as repeat claims dominate.
 
@@ -156,7 +156,7 @@ Symptoms of an attack on your relayer:
 
 Response options, in order:
 
-1. **Tighten env vars**: lower `MAX_TOPUPS_PER_IP_PER_HR` and `MAX_DAILY_LAMPORTS`. Takes effect on next request (no redeploy needed).
+1. **Tighten env vars**: lower `MAX_TOPUPS_PER_IP_PER_HR` and `MAX_DAILY_LAMPORTS`, then **redeploy** — Vercel env changes only apply from the next deployment (values are read at function cold start).
 2. **Pause the relayer**: set `MAX_DAILY_LAMPORTS=0`. Effectively disables top-up + relay until you re-enable.
 3. **Rotate the keypair**: generate a new one, update `RELAYER_SECRET_KEY` + `VITE_RELAYER_PUBKEY`, redeploy. Old wallet is harmless (no key compromise — the original key still works), but if you want a clean break this is the way.
 

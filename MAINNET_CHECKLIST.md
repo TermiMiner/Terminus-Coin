@@ -190,12 +190,14 @@ Real possibility. TERM may not be valuable enough for community-relayer spread t
 
 ### Status
 
+*(Corrected 2026-09-13 — the on-chain tip market shipped well before this block was last touched; it previously read "code not yet written", which understated the audit scope.)*
+
 - Design: ✅ complete (this section)
-- Code: ⏳ not yet written (separate work item)
-- Tests: ⏳ list specified in design notes
-- Devnet rollout: ⏳ pending implementation
-- External audit: must include this scope
-- Bootstrap relayer infra: ⏳ extends existing `miner-ui/api/relay.ts` once on-chain code is implemented
+- On-chain code: ✅ shipped — `claim(nonce, relayer_tip_term)`, the `MAX_TIP_TERM` = 5 TERM hard cap, the `tip <= net_reward` invariant, and bond `rent_payer` tracking are all in `programs/terminuscoin/src/lib.rs`
+- Tests: ✅ covered in `tests/terminus-coin.ts` — atomic tip transfer alongside the claim, `TipExceedsCap`, `TipExceedsReward`, and the `rent_payer` deposit/withdraw paths
+- Devnet rollout: ✅ live (operator runbook proven on devnet 2026-06-12)
+- External audit: ⏳ in scope, not yet commissioned — see §5
+- Bootstrap relayer infra: ✅ implemented in `miner-ui/api/relay.ts` — `BOOTSTRAP_MODE`, first-claim subsidy, `MIN_TIP_TERM` floor, deprecation signalling; ⏳ mainnet env configuration is still a launch-day step (§7)
 - Liquidity seeding: ⏳ day-0 launch action, executed atomically with mining open
 
 ---
@@ -254,7 +256,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 **Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer + docs, never the program); audit ref is tag `audit-scope-v1` (cut on the merge commit, `lib.rs` byte-identical to `1256c10`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
 
-> **Scope note for §1:** the relayer-tip market IS implemented in `claim()`. §1's "code not yet written" note is **stale** — the tip market is in scope and materially affects the quote.
+> **Scope note:** the relayer-tip market is implemented in `claim()` and is in scope — it materially affects the quote. (§1's Status block previously described it as unwritten; corrected 2026-09-13.)
 
 **Firm shortlist + quote-ask criteria:** see [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md) — the tiered shortlist (budget / contest / premium) and the five quote-ask items live there, so there's a single source of truth.
 
@@ -285,6 +287,8 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 - [ ] Production build deployed to Vercel/Netlify/Cloudflare Pages
 - [ ] **`VITE_RPC_URL` (frontend) → private RPC** — see the runbook below. The public RPC is rate-limited per-IP and 429s a sustained miner.
 - [ ] **`RPC_URL` (relayer) → private RPC** — a *separate* key from the frontend's. See the runbook below.
+- [ ] **Upstash Redis provisioned for the relayer** — backs the per-wallet quota, per-IP rate limit and daily spend cap. `/api/topup` and `/api/relay` both **fail closed** (503) without it, so a mainnet relayer with no Redis is non-functional rather than drainable. `ALLOW_UNGUARDED_TOPUP` is the devnet-only override and is ignored on mainnet-beta. See [`RELAYER_OPERATOR.md`](./RELAYER_OPERATOR.md) step 4.
+- [ ] **Relayer quotas tightened for mainnet** — `MAX_TOPUPS_PER_WALLET=1`, `MAX_DAILY_LAMPORTS` set to the drain you'd accept overnight (0.5 SOL is a sensible start), dedicated funding wallet holding only the operator budget. See `RELAYER_OPERATOR.md` § Hardening for mainnet.
 - [ ] Custom domain wired up
 
 ### Private RPC setup (runbook — proven on devnet 2026-06-12)

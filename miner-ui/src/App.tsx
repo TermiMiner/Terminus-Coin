@@ -21,6 +21,7 @@ import {
   sharedTopUp,
   type SharedRelayerInfo,
 } from "./relayerAdapter";
+import { useCluster, isPlayMoney, clusterUrlFlag } from "./cluster";
 import { useStaking } from "./useStaking";
 import { executeStakingAction } from "./stakingActions";
 import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS, FEE_PAYER_RENT_FLOOR_LAMPORTS } from "./sweepTerm";
@@ -37,6 +38,16 @@ const BURNER_TOPUP_THRESHOLD = 4_000_000;   // re-topup attempt at burner < 0.00
 
 const TERM_VERSION = "0.1.0";
 
+// Host only — never the full VITE_RPC_URL. A private RPC endpoint carries its
+// API key in the query string, and while the key is necessarily present in the
+// bundle, printing it in the footer puts it in every screenshot and support
+// paste. The hostname is the part that is actually useful when debugging.
+const rpcHost = (() => {
+  const url = import.meta.env.VITE_RPC_URL?.trim();
+  if (!url) return "unset";
+  try { return new URL(url).host; } catch { return "invalid"; }
+})();
+
 function fmt6(raw: bigint): string {
   const whole = raw / 1_000_000n;
   const frac = raw % 1_000_000n;
@@ -51,6 +62,10 @@ export default function App() {
   const { connection } = useConnection();
   const phantom = useWallet();
   const { state: chain, loading, initialized, rpcError } = useChainState(connection);
+  const cluster = useCluster(connection);
+  // Play money only once the cluster is KNOWN not to be mainnet; "unknown"
+  // keeps the real-value wording.
+  const playMoney = isPlayMoney(cluster);
 
   // Burner + (optional) local relayer wallets. Local relayer is for users
   // running `npm run dev` against their own keypair. The deployed site uses
@@ -1018,15 +1033,26 @@ export default function App() {
       {(isBurner || relayer.publicKey) && (
         <div className="burner-warning">
           ⚠ Browser-stored burner keypair. Secret key lives in localStorage —
-          devnet/testing only. Do not put significant value in this wallet.
+          {playMoney
+            ? " test-cluster funds only. Do not put significant value in this wallet."
+            : " treat it as a cash drawer, not a vault. Clearing site data destroys the key" +
+              " and everything in it. Withdraw TERM to a self-custody wallet as it accumulates."}
           {sharedActive && (
             <> Fee-payer is operated server-side; the SOL pool is funded
               and visible above. Burners get auto-topped-up before first claim.
             </>
           )}
           {localActive && (
-            <> Fund the relayer with devnet SOL via{" "}
-              <code>solana airdrop 1 {relayer.publicKey?.toBase58()} --url devnet</code>{" "}
+            <>
+              {playMoney ? (
+                <> Fund the relayer via{" "}
+                  <code>solana airdrop 1 {relayer.publicKey?.toBase58()} {clusterUrlFlag(cluster)}</code>{" "}
+                </>
+              ) : (
+                <> Fund the relayer from your own wallet via{" "}
+                  <code>solana transfer {relayer.publicKey?.toBase58()} 0.1 {clusterUrlFlag(cluster)}</code>{" "}
+                </>
+              )}
               — burners get auto-topped-up at mining start when below 0.008 SOL.
             </>
           )}
@@ -1319,7 +1345,7 @@ export default function App() {
       {/* Footer */}
       <div className="footer">
         Supply cap: 1,000,000,000 TERM &nbsp;|&nbsp; Burn: 0.25–5% &nbsp;|&nbsp; Treasury: 3%
-        &nbsp;|&nbsp; RPC: {import.meta.env.VITE_RPC_URL ?? "http://127.0.0.1:8899"}
+        &nbsp;|&nbsp; Cluster: {cluster} &nbsp;|&nbsp; RPC: {rpcHost}
       </div>
     </div>
   );

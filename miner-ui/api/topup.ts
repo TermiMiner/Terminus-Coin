@@ -15,6 +15,11 @@ const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
 const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
+// Devnet-only escape hatch for running without KV. See unguardedRefusal().
+const ALLOW_UNGUARDED_TOPUP = (process.env.ALLOW_UNGUARDED_TOPUP ?? "false").toLowerCase() === "true";
+// Same constant mainnet-launch.sh checks before it will touch chain.
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+
 function clientIp(req: VercelRequest): string {
   const hdr = req.headers["x-forwarded-for"];
   const raw = Array.isArray(hdr) ? hdr[0] : hdr ?? "";
@@ -29,6 +34,55 @@ function hourKey(prefix: string, key: string): string {
   return `${prefix}:${key}:hour:${new Date().toISOString().slice(0, 13)}`;
 }
 
+// Cached per cold start; only consulted on the escape-hatch path, so the normal
+// (KV-provisioned) path never pays for this round-trip.
+let cachedGenesis: string | null = null;
+
+/**
+ * The three quota guards all live behind KV. With no KV there are no guards at
+ * all, so a funded relayer can be drained by anyone who can POST — survivable on
+ * devnet (worthless SOL), not on mainnet. The default is therefore to REFUSE,
+ * matching every other money-path guard in this directory: RPC_URL throws rather
+ * than defaulting to a public endpoint, MIN_TIP_TERM refuses a silent 0.
+ *
+ * ALLOW_UNGUARDED_TOPUP=true re-opens the endpoint for devnet testing. The
+ * escape hatch is itself checked against the cluster, because the dangerous
+ * sequence is a devnet deployment that later flips RPC_URL to mainnet and
+ * forgets to unset it — on mainnet-beta the hatch is ignored. A cluster we
+ * cannot verify counts as mainnet.
+ *
+ * Returns a 503 body when the request must be refused, or null to proceed.
+ */
+async function unguardedRefusal(conn: Connection): Promise<Record<string, unknown> | null> {
+  if (!ALLOW_UNGUARDED_TOPUP) {
+    return {
+      error:
+        "relayer top-ups are disabled: quota guards are not provisioned. Set " +
+        "UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (RELAYER_OPERATOR.md step 4).",
+      reason: "guards-unavailable",
+    };
+  }
+  try {
+    if (cachedGenesis === null) cachedGenesis = await conn.getGenesisHash();
+  } catch {
+    return {
+      error:
+        "relayer top-ups are disabled: quota guards are not provisioned and the " +
+        "cluster could not be verified, so the devnet-only override cannot be honoured.",
+      reason: "cluster-unverified",
+    };
+  }
+  if (cachedGenesis === MAINNET_GENESIS) {
+    return {
+      error:
+        "relayer top-ups are disabled: ALLOW_UNGUARDED_TOPUP is ignored on " +
+        "mainnet-beta. Provision KV quota guards (RELAYER_OPERATOR.md step 4).",
+      reason: "guards-unavailable-mainnet",
+    };
+  }
+  return null;
+}
+
 /**
  * POST /api/topup  { recipient: string }
  *
@@ -41,8 +95,9 @@ function hourKey(prefix: string, key: string): string {
  *   2. Per-IP rate limit  — max MAX_TOPUPS_PER_IP_PER_HR per source IP per hour
  *   3. Daily spend cap    — total relayer outflow today ≤ MAX_DAILY_LAMPORTS
  *
- * When KV env vars aren't set, the guards are SKIPPED — fine for devnet
- * testing, NOT safe for mainnet. See RELAYER_OPERATOR.md.
+ * With no KV the guards cannot run, so the endpoint REFUSES (503) rather than
+ * serving unguarded top-ups. See unguardedRefusal(). Provisioning KV is
+ * RELAYER_OPERATOR.md step 4.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
@@ -72,6 +127,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
+    // ── Config (fail loud) ─────────────────────────────────────────────
+    // Resolved before the guards so the fail-closed check below has a
+    // Connection to verify the cluster with. Fail loud if RPC_URL is unset —
+    // never silently default to a public endpoint (a mainnet deploy must not
+    // route to devnet).
+    const rpc = (process.env.RPC_URL ?? "").trim();
+    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
+    const raw = process.env.RELAYER_SECRET_KEY;
+    if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
+    const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
+    const conn = new Connection(rpc, "confirmed");
+
+    // ── Guard availability: fail CLOSED ────────────────────────────────
+    // No KV means no quotas, no rate limit and no daily cap. Refuse rather
+    // than hand out SOL unguarded.
+    if (!kv) {
+      const refusal = await unguardedRefusal(conn);
+      if (refusal) return res.status(503).json(refusal);
+    }
+
     // ── Atomic quota reservations ──────────────────────────────────────
     // Read-then-check has a concurrent-burst race: N concurrent requests
     // all see (count < cap), all pass, all proceed. Atomic incr-then-check
@@ -118,15 +193,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ── On-chain checks ────────────────────────────────────────────────
-    // Fail loud if RPC_URL is unset — never silently default to a public
-    // endpoint (a mainnet deploy must not route to devnet).
-    const rpc = (process.env.RPC_URL ?? "").trim();
-    if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
-    const raw = process.env.RELAYER_SECRET_KEY;
-    if (!raw) throw new Error("RELAYER_SECRET_KEY env var not set");
-    const relayer = Keypair.fromSecretKey(new Uint8Array(JSON.parse(raw.trim())));
-    const conn = new Connection(rpc, "confirmed");
-
     const balance = await conn.getBalance(recipientKey);
     if (balance >= RECIPIENT_BALANCE_CAP) {
       // Already funded — release reservations since we didn't actually spend.

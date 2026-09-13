@@ -71,6 +71,59 @@ const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL   ?? process.env.KV_REST_
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? "";
 const kv = REDIS_URL && REDIS_TOKEN ? new Redis({ url: REDIS_URL, token: REDIS_TOKEN }) : null;
 
+// Devnet-only escape hatch for running without KV. See unguardedRefusal().
+const ALLOW_UNGUARDED_TOPUP = (process.env.ALLOW_UNGUARDED_TOPUP ?? "false").toLowerCase() === "true";
+// Same constant mainnet-launch.sh checks before it will touch chain.
+const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+
+// Cached per cold start; only consulted on the escape-hatch path.
+let cachedGenesis: string | null = null;
+
+/**
+ * Duplicated from api/topup.ts rather than shared, because each file in this
+ * directory is independently forkable (RELAYER_OPERATOR.md) — no shared imports.
+ *
+ * The per-IP rate limit and the daily spend cap both live behind KV. With no KV
+ * neither runs, and MIN_TIP_TERM alone does not close the hole: under
+ * BOOTSTRAP_MODE a first claim is subsidized at tip = 0, so unlimited fresh
+ * wallets mean unlimited free broadcasts, and non-claim txs carry no tip at all.
+ * Refuse rather than broadcast unguarded.
+ *
+ * ALLOW_UNGUARDED_TOPUP=true re-opens it for devnet (one switch governs both
+ * endpoints). Ignored on mainnet-beta; an unverifiable cluster counts as mainnet.
+ *
+ * Returns a 503 body when the request must be refused, or null to proceed.
+ */
+async function unguardedRefusal(conn: Connection): Promise<Record<string, unknown> | null> {
+  if (!ALLOW_UNGUARDED_TOPUP) {
+    return {
+      error:
+        "relayer is disabled: quota guards are not provisioned. Set " +
+        "UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (RELAYER_OPERATOR.md step 4).",
+      reason: "guards-unavailable",
+    };
+  }
+  try {
+    if (cachedGenesis === null) cachedGenesis = await conn.getGenesisHash();
+  } catch {
+    return {
+      error:
+        "relayer is disabled: quota guards are not provisioned and the cluster " +
+        "could not be verified, so the devnet-only override cannot be honoured.",
+      reason: "cluster-unverified",
+    };
+  }
+  if (cachedGenesis === MAINNET_GENESIS) {
+    return {
+      error:
+        "relayer is disabled: ALLOW_UNGUARDED_TOPUP is ignored on mainnet-beta. " +
+        "Provision KV quota guards (RELAYER_OPERATOR.md step 4).",
+      reason: "guards-unavailable-mainnet",
+    };
+  }
+  return null;
+}
+
 function clientIp(req: VercelRequest): string {
   const hdr = req.headers["x-forwarded-for"];
   const raw = Array.isArray(hdr) ? hdr[0] : hdr ?? "";
@@ -228,6 +281,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rpc = (process.env.RPC_URL ?? "").trim();
     if (!rpc) throw new Error("RPC_URL is not set — refusing to default to a public RPC endpoint. Set RPC_URL to your cluster's RPC (devnet or mainnet).");
     const conn = new Connection(rpc, "confirmed");
+
+    // ── Guard availability: fail CLOSED ────────────────────────────────
+    // Runs before the daily-spend reservation and before broadcast, so an
+    // unguarded relayer never pays a lamport.
+    if (!kv) {
+      const refusal = await unguardedRefusal(conn);
+      if (refusal) return res.status(503).json(refusal);
+    }
 
     // ── Tip-floor + bootstrap policy ───────────────────────────────────
     // The tip floor (MIN_TIP_TERM) is a PERMANENT relayer cost-recovery rule,

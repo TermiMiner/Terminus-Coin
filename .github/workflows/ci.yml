@@ -225,9 +225,14 @@ jobs:
           path: ~/.cargo/bin/anchor
           key: ${{ runner.os }}-anchor-cli-${{ env.ANCHOR_VERSION }}
 
+      # anchor-cli links hidapi (Ledger support, via solana-remote-wallet),
+      # whose build script needs libudev from pkg-config; the runner image
+      # ships neither the headers nor the .pc file.
       - name: Install Anchor CLI
         if: steps.cache-anchor.outputs.cache-hit != 'true'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
           cargo install --git https://github.com/coral-xyz/anchor \
             --tag "v${ANCHOR_VERSION}" anchor-cli --locked
 

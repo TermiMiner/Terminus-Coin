@@ -283,7 +283,10 @@ jobs:
 
       - name: Verify program is loaded at the declared address
         run: |
+          # --keypair: even read-only `program show` refuses to run without a
+          # signer, and the runner has no default ~/.config/solana/id.json.
           solana program show "$PROGRAM_ID" --url http://127.0.0.1:8899 \
+            --keypair "$HOME/.config/solana/devnet-wallet.json" \
             || { echo "::error::Program not found at $PROGRAM_ID — --bpf-program load failed."; tail -50 validator.log; exit 1; }
 
       - name: yarn test

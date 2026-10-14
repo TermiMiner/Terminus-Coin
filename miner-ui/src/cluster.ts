@@ -61,9 +61,16 @@ export function isPlayMoney(cluster: Cluster): boolean {
   return cluster === "devnet" || cluster === "testnet" || cluster === "local";
 }
 
-/** CLI flag for `solana` commands against this cluster, e.g. `--url devnet`. */
+/**
+ * CLI flag for `solana` commands against this cluster, e.g. `--url devnet`.
+ * Empty for "unknown": any guess points the user at a specific cluster (and
+ * mainnet is the costly wrong guess), so leave the CLI on its own configured
+ * cluster instead.
+ */
 export function clusterUrlFlag(cluster: Cluster): string {
   switch (cluster) {
+    case "mainnet":
+      return "--url mainnet-beta";
     case "devnet":
       return "--url devnet";
     case "testnet":
@@ -71,6 +78,6 @@ export function clusterUrlFlag(cluster: Cluster): string {
     case "local":
       return "--url localhost";
     default:
-      return "--url mainnet-beta";
+      return "";
   }
 }

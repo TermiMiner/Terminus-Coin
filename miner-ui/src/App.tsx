@@ -38,15 +38,15 @@ const BURNER_TOPUP_THRESHOLD = 4_000_000;   // re-topup attempt at burner < 0.00
 
 const TERM_VERSION = "0.1.0";
 
-// Host only — never the full VITE_RPC_URL. A private RPC endpoint carries its
+// Host only — never the full endpoint URL. A private RPC endpoint carries its
 // API key in the query string, and while the key is necessarily present in the
 // bundle, printing it in the footer puts it in every screenshot and support
 // paste. The hostname is the part that is actually useful when debugging.
-const rpcHost = (() => {
-  const url = import.meta.env.VITE_RPC_URL?.trim();
-  if (!url) return "unset";
-  try { return new URL(url).host; } catch { return "invalid"; }
-})();
+// Fed from the live connection rather than VITE_RPC_URL so it also reflects
+// main.tsx's dev default (the local validator) when the env var is unset.
+function rpcHostOf(endpoint: string): string {
+  try { return new URL(endpoint).host; } catch { return "invalid"; }
+}
 
 function fmt6(raw: bigint): string {
   const whole = raw / 1_000_000n;
@@ -1050,7 +1050,7 @@ export default function App() {
                 </>
               ) : (
                 <> Fund the relayer from your own wallet via{" "}
-                  <code>solana transfer {relayer.publicKey?.toBase58()} 0.1 {clusterUrlFlag(cluster)}</code>{" "}
+                  <code>{`solana transfer ${relayer.publicKey?.toBase58()} 0.1 --allow-unfunded-recipient ${clusterUrlFlag(cluster)}`.trimEnd()}</code>{" "}
                 </>
               )}
               — burners get auto-topped-up at mining start when below 0.008 SOL.
@@ -1345,7 +1345,7 @@ export default function App() {
       {/* Footer */}
       <div className="footer">
         Supply cap: 1,000,000,000 TERM &nbsp;|&nbsp; Burn: 0.25–5% &nbsp;|&nbsp; Treasury: 3%
-        &nbsp;|&nbsp; Cluster: {cluster} &nbsp;|&nbsp; RPC: {rpcHost}
+        &nbsp;|&nbsp; Cluster: {cluster} &nbsp;|&nbsp; RPC: {rpcHostOf(connection.rpcEndpoint)}
       </div>
     </div>
   );

@@ -118,11 +118,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Track reservations so we can roll back if anything downstream fails.
   // Each entry is { key, amount } — rollback uses incrby(key, -amount).
+  // rollback() drains the list, so calling it twice is a no-op. The send
+  // path's inner catch rolls back and rethrows into the outer catch, which
+  // rolls back again; without the drain every counter was decremented twice
+  // (wallet quota → -1, daily spend under-counted by two grants).
   const reservations: Array<{ key: string; amount: number }> = [];
   const rollback = async () => {
     if (!kv) return;
+    const pending = reservations.splice(0);
     await Promise.all(
-      reservations.map((r) => kv!.incrby(r.key, -r.amount)),
+      pending.map((r) => kv!.incrby(r.key, -r.amount)),
     ).catch(() => { /* best-effort */ });
   };
 

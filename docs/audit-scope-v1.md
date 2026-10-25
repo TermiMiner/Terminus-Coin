@@ -73,6 +73,6 @@ Manual security audit with a published report; all critical and high findings re
 
 **Selection:** compare on (price ÷ auditor-weeks) and Solana/Anchor track record, not headline price. A cheap quote with half the auditor-time isn't cheaper per unit of coverage.
 
-## Open scope question to settle before kickoff
+## Scope emphasis
 
-Confirm the **relayer-tip market** is explicitly in scope (it is implemented in `claim()` — `MAINNET_CHECKLIST.md` §1's "code not yet written" note is stale). This materially affects the quote.
+The **relayer-tip market** is in scope, and it is a live money path. In the same instruction that mints a claim, the miner authorises a `token::transfer` of `relayer_tip_term` from their own ATA to the broadcaster's, bounded by both `MAX_TIP_TERM` and `tip <= net_reward` (post-burn, post-treasury). See subsystem 1 above. Please price it explicitly rather than treating `claim` as a plain PoW handler — it materially affects the quote.

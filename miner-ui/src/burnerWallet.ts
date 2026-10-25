@@ -15,8 +15,11 @@ import { confirmOrCheckLanded } from "./confirmTx";
  *
  * SECURITY: the secret key is plaintext-accessible to any JS on the page,
  * any browser extension, and anyone with dev-tools access to this device.
- * Use ONLY for devnet / testing. Never store mainnet TERM that has real value
- * here, and never put more than you'd be comfortable losing into the relayer.
+ * On mainnet this is the "cash drawer" custody model (MAINNET_CHECKLIST §7): the
+ * burner is expected to hold real but small TERM balances, swept out to a
+ * self-custody wallet via the in-UI withdraw path as they accumulate. Never hold
+ * a balance here you'd mind losing to a cleared localStorage or a bad extension,
+ * and never put more than that into the relayer either.
  *
  * Storage format matches `solana-keygen` (JSON array of 64 bytes), so a
  * keypair can be exported and used via the standard CLI.

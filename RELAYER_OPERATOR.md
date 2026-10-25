@@ -53,7 +53,13 @@ Recommended starting balance for a new operator: **2–5 SOL on devnet**, **0.5�
 
 ## Step 4: Provision Upstash Redis
 
-The Redis store backs the per-wallet quota, per-IP rate limit, and daily-spend tracker. **Skipping this step means the relayer has no rate limits and can be drained quickly** — only fine for devnet experimentation, never for mainnet.
+The Redis store backs the per-wallet quota, per-IP rate limit, and daily-spend tracker. Without it there are no rate limits at all and a funded relayer can be drained by anyone who can POST.
+
+**`/api/topup` and `/api/relay` therefore refuse to run unguarded.** With no Redis credentials both return `503 {"reason":"guards-unavailable"}` instead of spending SOL. This step is not optional on mainnet, and skipping it fails closed rather than quietly handing out funds.
+
+Note that the `MIN_TIP_TERM` floor does **not** substitute for the KV guards on `/api/relay`: under `BOOTSTRAP_MODE` a first claim is subsidized at tip = 0, so without the per-IP limit and daily cap an attacker with unlimited fresh wallets gets unlimited free broadcasts.
+
+For devnet experimentation you can set `ALLOW_UNGUARDED_TOPUP=true` to re-open both endpoints without Redis. That override is **ignored on mainnet-beta** — the handler checks the cluster's genesis hash, so a devnet deployment that later flips `RPC_URL` to mainnet and forgets to unset the override still refuses (`reason: "guards-unavailable-mainnet"`). A cluster it cannot verify is treated as mainnet.
 
 1. In your Vercel project: **Storage** → **Create Database** → pick **Upstash → Serverless DB (Redis, Vector, Queue, Search)** from the Marketplace and provision a Redis database
 2. Name it (e.g., `term-relayer-kv`)
@@ -78,6 +84,7 @@ Defaults are sensible; override only if you understand the trade-offs.
 
 | Name | Default | What it controls |
 |---|---|---|
+| `ALLOW_UNGUARDED_TOPUP` | `false` | Devnet-only: run `/api/topup` **and** `/api/relay` with no Redis quota guards. Ignored on mainnet-beta (see Step 4). Leave unset for any real deployment. |
 | `MAX_TOPUPS_PER_WALLET` | `1` | How many bootstrap top-ups a single wallet can ever receive. |
 | `MAX_TOPUPS_PER_IP_PER_HR` | `5` | How many top-up requests one IP can make per hour. Sliding 1-hour window. |
 | `MAX_RELAYS_PER_IP_PER_HR` | `120` | How many claim-relay requests one IP can make per hour. ~2/min — matches the on-chain 60s rate limit. |

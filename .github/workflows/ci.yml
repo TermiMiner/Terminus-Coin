@@ -181,3 +181,122 @@ jobs:
       - name: Build
         working-directory: miner-ui
         run: npx vite build
+
+  integration-tests:
+    name: Anchor integration tests (local validator)
+    runs-on: ubuntu-latest
+    # The behavioural suite — the only job that actually executes program logic.
+    # Everything above it checks that the code builds, lints and type-checks;
+    # nothing above it would catch an emission-math or authority-state-machine
+    # regression. Runs the same `yarn test` a developer runs locally.
+    timeout-minutes: 45
+    env:
+      PROGRAM_ID: FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y
+      ANCHOR_VERSION: 0.32.1
+      SOLANA_VERSION: v3.1.12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # anchor-cli builds from source (~15 min cold). Cached on the pinned
+      # version so only the first run on a new version pays for it.
+      - name: Cache anchor-cli
+        id: cache-anchor
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/anchor
+          key: ${{ runner.os }}-anchor-cli-${{ env.ANCHOR_VERSION }}
+
+      # anchor-cli links hidapi (Ledger support, via solana-remote-wallet),
+      # whose build script needs libudev from pkg-config; the runner image
+      # ships neither the headers nor the .pc file.
+      - name: Install Anchor CLI
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+          cargo install --git https://github.com/coral-xyz/anchor \
+            --tag "v${ANCHOR_VERSION}" anchor-cli --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install node deps
+        run: yarn install --frozen-lockfile
+
+      # Produces target/deploy/terminuscoin.so, target/idl/terminuscoin.json and
+      # target/types/terminuscoin.ts. The tests import the generated types and
+      # resolve the program through `anchor.workspace`, so cargo build-sbf alone
+      # (the rust-build job) is not enough here.
+      - name: anchor build
+        run: anchor build
+
+      # The deployer keypair is a secret and is NOT in the repo, so the program
+      # cannot be deployed to its declared address with `solana program deploy`.
+      # --bpf-program loads the binary at a chosen address at genesis instead,
+      # which is exactly the address declare_id! bakes into the binary.
+      - name: Start local validator
+        run: |
+          solana-test-validator --reset --quiet \
+            --bpf-program "$PROGRAM_ID" target/deploy/terminuscoin.so \
+            > validator.log 2>&1 &
+          echo "Waiting for validator to accept RPC..."
+          for i in $(seq 1 60); do
+            if solana cluster-version --url http://127.0.0.1:8899 >/dev/null 2>&1; then
+              echo "Validator up after ${i}s."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Validator did not become ready within 60s."
+          tail -50 validator.log
+          exit 1
+
+      # yarn test hardcodes this exact path (see package.json).
+      - name: Create and fund test wallet
+        run: |
+          mkdir -p "$HOME/.config/solana"
+          solana-keygen new --no-bip39-passphrase --silent \
+            --outfile "$HOME/.config/solana/devnet-wallet.json"
+          solana airdrop 100 \
+            --keypair "$HOME/.config/solana/devnet-wallet.json" \
+            --url http://127.0.0.1:8899
+
+      - name: Verify program is loaded at the declared address
+        run: |
+          # --keypair: even read-only `program show` refuses to run without a
+          # signer, and the runner has no default ~/.config/solana/id.json.
+          solana program show "$PROGRAM_ID" --url http://127.0.0.1:8899 \
+            --keypair "$HOME/.config/solana/devnet-wallet.json" \
+            || { echo "::error::Program not found at $PROGRAM_ID — --bpf-program load failed."; tail -50 validator.log; exit 1; }
+
+      - name: yarn test
+        run: yarn test
+
+      # The validator log is the only way to read a program panic after the fact.
+      - name: Upload validator log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validator-log
+          path: validator.log
+          retention-days: 7

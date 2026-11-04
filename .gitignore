@@ -35,6 +35,12 @@ miner-ui/dist/
 .yarn/
 .pnp.*
 
+# Devnet load harness (scripts/devnet_load.ts). The wallet pool holds RAW
+# SECRET KEYS for the synthetic miners — never commit it. Devnet-only funds,
+# but a committed keypair is a committed keypair.
+scripts/.devnet-load-wallets.json
+devnet-load.jsonl
+
 # macOS
 .DS_Store
 

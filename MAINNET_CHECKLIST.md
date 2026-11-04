@@ -275,6 +275,10 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 ## 6. Closed beta on devnet
 
+**Plan:** [`docs/devnet-beta.md`](docs/devnet-beta.md) — tracks, load profile, triage rubric and the §6 evidence mapping. Runs **concurrently with the audit (§5)**, not after it; starting it late adds 30 serial days to launch for no reason.
+
+> The second criterion below is not satisfiable by waiting. Difficulty holds steady only at 100 claims / 600s (one every 6s), and the 60s per-wallet rate limit caps a wallet at 1 claim/min — so **≥10 wallets must mine continuously** just to hold difficulty flat. Below that it halves every window and pins at the floor of 16 within ~80 minutes. `scripts/devnet_load.ts` drives that load; see the plan.
+
 - [ ] At least 30 days of devnet operation with multiple miners
 - [ ] No critical bugs reported
 - [ ] Difficulty adjustment observed working under varying load

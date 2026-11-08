@@ -6,14 +6,24 @@
 // 100 claims per 600s = one claim every 6 seconds. The per-wallet rate limit on
 // devnet is 60s, so a single wallet can contribute at most 1 claim/min: holding
 // difficulty flat needs >= 10 wallets mining continuously, and pushing it up
-// needs more. Below that, every window expires under target and difficulty
-// halves — from the initial 4096 it reaches the floor of 16 in eight windows
-// (~80 minutes) and pins there.
+// needs more. Below target it falls, but only when a claim lands: a full window
+// with N claims scales it by N/100, never by less than half per adjustment. So
+// light continuous mining (<= 5 claims/min) halves it every 10 minutes down to
+// the floor of 16, and no mining at all leaves it where it is.
 //
 // So MAINNET_CHECKLIST §6 ("difficulty adjustment observed working under
 // varying load") cannot be satisfied by waiting for organic testers. This
-// harness drives the load instead: N wallets, a phase schedule that varies N
-// over time, and JSONL output you can replay to evidence the §6 criteria.
+// harness drives the load instead: a schedule of claim rates, and JSONL output
+// you can replay to evidence the §6 criteria.
+//
+// ONE CLAIM IN FLIGHT. Every landed claim rotates last_hash, so only one claim
+// per last_hash can land. Wallets mining in parallel against the same state
+// just race each other, and the losers fail (those that get past preflight
+// still pay the fee). So the harness sends one claim at a time, re-reading
+// last_hash before each, and rotates through a pool of wallets only because of
+// the per-wallet rate limit. Load is set in claims per minute, and since the
+// harness can't collide with itself, a stale-nonce failure means someone
+// else's claim landed first.
 //
 // See docs/devnet-beta.md for how this fits the wider beta plan.
 //
@@ -25,10 +35,14 @@
 //   DEPLOYER=~/.config/solana/devnet-wallet.json \
 //     npx ts-node -P tsconfig.json scripts/devnet_load.ts [--phases phases.json]
 //
+// A phases file is a JSON array shaped like DEFAULT_PHASES:
+//   [{ "label": "ramp-up", "claimsPerMin": 20, "minutes": 60 }, ...]
+//
 // Optional env:
 //   WALLET_FILE   pool state (default scripts/.devnet-load-wallets.json)
 //   LOG_FILE      JSONL event log (default devnet-load.jsonl)
-//   MAX_WALLETS   size of the pool to create/fund (default: max across phases)
+//   MAX_WALLETS   size of the pool to create/fund (default: enough for the
+//                 fastest phase under the on-chain per-wallet rate limit)
 
 import {
   AnchorProvider, BN, Program, Wallet, type Idl,
@@ -54,19 +68,36 @@ const idl = JSON.parse(
 
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const MAX_U64 = (1n << 64n) - 1n;
-const RATE_LIMIT_MS = 60_000;      // devnet set_rate_limit(60); claims closer than this are rejected on-chain
-const SETUP_LAMPORTS = 12_000_000; // ~0.012 SOL: ATA + bond + user_state rent, plus fees for a long run
-const MINE_YIELD_EVERY = 20_000;   // hand the event loop back so RPC stays responsive
+const RATE_LIMIT_MARGIN_MS = 5_000; // on-chain unix_timestamp can lag the local clock
+const POOL_SPARE = 2;               // wallets beyond the minimum the rate limit needs
+const FAIL_BACKOFF_MS = 15_000;     // rest a wallet after an unclassified failure (RPC error, out of SOL, …)
+const SETUP_LAMPORTS = 12_000_000;  // ~0.012 SOL: ATA + bond + user_state rent, plus fees for a long run
+const MINE_YIELD_EVERY = 20_000;    // hand the event loop back so signals and RPC stay responsive
 
-/** One phase of the load profile: hold `wallets` active for `minutes`. */
-type Phase = { wallets: number; minutes: number; label?: string };
+// Program error codes, taken from the IDL rather than hard-coded (Anchor
+// numbers custom errors from 6000 in declaration order).
+const errorNames = new Map((idl.errors ?? []).map((e) => [e.code, e.name]));
+function errorCode(name: string): number {
+  const e = (idl.errors ?? []).find((x) => x.name === name);
+  if (!e) throw new Error(`IDL has no ${name} error — is miner-ui/idl/terminuscoin.json current?`);
+  return e.code;
+}
+const INVALID_POW = errorCode("InvalidProofOfWork"); // stale: last_hash or difficulty moved first
+const RATE_LIMITED = errorCode("RateLimitExceeded");
+// Not retryable: mining is paused, or the supply cap is reached and mining is over.
+const TERMINAL = new Set([errorCode("ContractPaused"), errorCode("SupplyCapReached")]);
 
-// Default profile — the ramp from docs/devnet-beta.md. Override with --phases.
+/** One phase of the load profile: send `claimsPerMin` claims a minute for `minutes`. */
+type Phase = { claimsPerMin: number; minutes: number; label?: string };
+
+// Default profile — the table in docs/devnet-beta.md. Target is 10 claims/min
+// (100 per 600s window), so each rate reads as a multiple of it. Override with
+// --phases.
 const DEFAULT_PHASES: Phase[] = [
-  { label: "baseline", wallets: 12, minutes: 60 },
-  { label: "ramp-up",  wallets: 30, minutes: 120 },
-  { label: "drop",     wallets: 2,  minutes: 90 },
-  { label: "recover",  wallets: 12, minutes: 120 },
+  { label: "baseline", claimsPerMin: 10, minutes: 60 }, // 1×   — roughly steady
+  { label: "ramp-up",  claimsPerMin: 20, minutes: 60 }, // 2×   — doubles every ~5 min
+  { label: "drop",     claimsPerMin: 2,  minutes: 60 }, // 0.2× — halves every 10 min
+  { label: "recover",  claimsPerMin: 15, minutes: 60 }, // 1.5× — ×1.5 every ~7 min
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -81,6 +112,44 @@ function loadKeypair(file: string): Keypair {
   );
 }
 
+function loadPhases(): Phase[] {
+  const i = process.argv.indexOf("--phases");
+  if (i === -1) return DEFAULT_PHASES;
+  const phases = JSON.parse(fs.readFileSync(process.argv[i + 1], "utf8")) as Phase[];
+  if (!Array.isArray(phases) || phases.length === 0) {
+    throw new Error("--phases file must be a non-empty JSON array.");
+  }
+  for (const p of phases) {
+    if (!(p.claimsPerMin > 0) || !(p.minutes > 0)) {
+      throw new Error(`Bad phase ${JSON.stringify(p)}: needs claimsPerMin > 0 and minutes > 0.`);
+    }
+  }
+  return phases;
+}
+
+/** Something loggable for anything thrown, including values that aren't Errors. */
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  let json: string | undefined;
+  try { json = JSON.stringify(err); } catch { /* circular */ }
+  return `${(err as any)?.constructor?.name ?? typeof err} ${json ?? String(err)}`;
+}
+
+/**
+ * The program error code in a failed send, whichever way it failed:
+ *   rejected by preflight → "... custom program error: 0x1771 ..."
+ *   failed on-chain       → "... Status: ({"err":{"InstructionError":[0,{"Custom":6001}]}}) ..."
+ * Which one a stale claim hits depends on whether the claim that beat it had
+ * confirmed by the time ours was simulated.
+ */
+function programErrorCode(err: unknown): number | undefined {
+  const msg = describeError(err);
+  const hex = /custom program error: 0x([0-9a-f]+)/i.exec(msg);
+  if (hex) return parseInt(hex[1], 16);
+  const dec = /"Custom":(\d+)/.exec(msg);
+  return dec ? Number(dec[1]) : undefined;
+}
+
 function meetsDifficulty(hash: Uint8Array, target: bigint): boolean {
   let high = 0n;
   for (let i = 0; i < 8; i++) high = (high << 8n) | BigInt(hash[i]);
@@ -91,8 +160,8 @@ function meetsDifficulty(hash: Uint8Array, target: bigint): boolean {
  * Mine a nonce for `user` against `lastHash`. Mirrors the on-chain preimage:
  * 72 bytes = nonce (u64 LE) || last_hash (32) || miner pubkey (32).
  *
- * Yields to the event loop periodically — without that, one wallet mining a
- * high difficulty would stall every other wallet's RPC and starve the pool.
+ * Yields to the event loop periodically, so a long search at high difficulty
+ * doesn't block signal handling or the RPC connection.
  */
 async function mineNonce(
   lastHash: number[], user: PublicKey, difficulty: bigint,
@@ -132,15 +201,7 @@ async function main() {
   }
   console.log(`Cluster genesis : ${genesis} (not mainnet — ok)`);
 
-  const phases: Phase[] = (() => {
-    const i = process.argv.indexOf("--phases");
-    if (i === -1) return DEFAULT_PHASES;
-    return JSON.parse(fs.readFileSync(process.argv[i + 1], "utf8")) as Phase[];
-  })();
-
-  const poolSize = Number(process.env.MAX_WALLETS ?? 0)
-    || Math.max(...phases.map((p) => p.wallets));
-  const walletFile = expand(process.env.WALLET_FILE ?? path.join(__dirname, ".devnet-load-wallets.json"));
+  const phases = loadPhases();
   const logFile = expand(process.env.LOG_FILE ?? "devnet-load.jsonl");
   const log = fs.createWriteStream(logFile, { flags: "a" });
   const emit = (ev: Record<string, unknown>) =>
@@ -160,16 +221,25 @@ async function main() {
   const [mintPDA] = PublicKey.findProgramAddressSync(
     [Buffer.from("mint")], program.programId);
 
+  // Each wallet can claim once per walletGapMs, so the pool has to cover the
+  // fastest phase. Read the limit from chain rather than assuming devnet's 60s.
+  const rateLimitSecs = Number((await fetchGlobalState(globalStatePDA)).rateLimitSeconds);
+  const walletGapMs = rateLimitSecs > 0 ? rateLimitSecs * 1000 + RATE_LIMIT_MARGIN_MS : 0;
+  const maxRate = Math.max(...phases.map((p) => p.claimsPerMin));
+  const poolNeeded = Math.ceil((maxRate * walletGapMs) / 60_000) + POOL_SPARE;
+  const poolSize = Number(process.env.MAX_WALLETS ?? 0) || poolNeeded;
+  const walletFile = expand(process.env.WALLET_FILE ?? path.join(__dirname, ".devnet-load-wallets.json"));
+
   console.log(`Program         : ${program.programId.toBase58()}`);
   console.log(`Funding wallet  : ${deployer.publicKey.toBase58()}`);
-  console.log(`Pool size       : ${poolSize}`);
+  console.log(`Rate limit      : ${rateLimitSecs}s per wallet`);
+  console.log(`Pool size       : ${poolSize}${poolSize < poolNeeded ? ` (below the ${poolNeeded} the fastest phase needs — it will fall short)` : ""}`);
   console.log(`Event log       : ${logFile}`);
-  console.log(`Phases          : ${phases.map((p) => `${p.label ?? "?"}(${p.wallets}w/${p.minutes}m)`).join(" → ")}`);
+  console.log(`Phases          : ${phases.map((p) => `${p.label ?? "?"}(${p.claimsPerMin}/min × ${p.minutes}m)`).join(" → ")}`);
 
   // ── Wallet pool (persisted) ─────────────────────────────────────────────────
   // Reused across runs on purpose: each wallet's bond, ATA and user_state are
-  // already paid for, so a restart doesn't re-rent them or re-trip the
-  // relayer's per-wallet topup quota.
+  // already paid for, so a restart doesn't pay that rent again.
   let secrets: number[][] = fs.existsSync(walletFile)
     ? JSON.parse(fs.readFileSync(walletFile, "utf8"))
     : [];
@@ -201,8 +271,11 @@ async function main() {
           kp.publicKey, ata, kp.publicKey, mintPDA));
       }
       if (needBond) {
+        // rent_payer is its own signer. Left out, Anchor fills in the provider
+        // wallet (the deployer), which doesn't sign here and the send fails.
+        // The miner pays its own bond rent out of SETUP_LAMPORTS.
         tx.add(await program.methods.depositBond()
-          .accounts({ authority: kp.publicKey }).instruction());
+          .accounts({ authority: kp.publicKey, rentPayer: kp.publicKey }).instruction());
       }
       await sendAndConfirmTransaction(conn, tx, [kp], { commitment: "confirmed" });
       emit({ event: "wallet_setup", wallet: kp.publicKey.toBase58(), ata: needAta, bond: needBond });
@@ -213,48 +286,48 @@ async function main() {
 
   // ── Mining loop ─────────────────────────────────────────────────────────────
   let stopping = false;
-  process.on("SIGINT", () => { console.log("\nStopping after in-flight claims…"); stopping = true; });
+  process.on("SIGINT", () => { console.log("\nStopping after the in-flight claim…"); stopping = true; });
 
-  // Seeded with a stagger rather than left empty. An empty map makes every
-  // wallet eligible on the first cycle: all N mine the same last_hash, all
-  // submit, one lands and rotates it, and the other N-1 fail InvalidProofOfWork.
-  // That never settles — only the winner's timestamp advances — so the pool
-  // burns N times the CPU per landed claim and fills the log with failures that
-  // look like breakage. Spreading first eligibility across the rate-limit window
-  // puts roughly one wallet in play at a time instead.
-  const lastClaimAt = new Map<string, number>();
-  const t0run = Date.now();
-  miners.forEach((kp, i) => {
-    const offset = Math.round((i / Math.max(miners.length, 1)) * RATE_LIMIT_MS);
-    lastClaimAt.set(kp.publicKey.toBase58(), t0run - RATE_LIMIT_MS + offset);
-  });
+  const sleepUntil = async (t: number) => {
+    while (!stopping && Date.now() < t) {
+      await new Promise((r) => setTimeout(r, Math.min(1_000, t - Date.now())));
+    }
+  };
+
+  // When each wallet may claim next. Starts at 0: a wallet that claimed just
+  // before a restart gets one RateLimitExceeded and backs off.
+  const nextEligible = new Map<string, number>(miners.map((kp) => [kp.publicKey.toBase58(), 0]));
   let lastSeenDifficulty = -1n;
+  // The last_hash our most recent landed claim consumed. Seeing it again means
+  // the RPC node hasn't caught up with that claim yet.
+  let consumedHash = "";
 
-  /** Outcome of one wallet's turn. Only "ok" means a claim landed. */
-  type Outcome = "ok" | "skip" | "stale" | "ratelimit" | "error" | "terminal";
+  type Outcome = "ok" | "stale" | "ratelimit" | "error" | "terminal";
 
+  /** One claim attempt for `kp` against fresh state. Never throws. */
   async function attemptClaim(kp: Keypair): Promise<Outcome> {
     const key = kp.publicKey.toBase58();
-    const since = Date.now() - (lastClaimAt.get(key) ?? 0);
-    if (since < RATE_LIMIT_MS) return "skip";
-
-    const state = await fetchGlobalState(globalStatePDA);
-    const difficulty = BigInt(state.difficulty.toString());
-
-    // Difficulty transitions are the §6 evidence — record every change we see.
-    if (difficulty !== lastSeenDifficulty) {
-      emit({ event: "difficulty", difficulty: difficulty.toString(), totalClaims: Number(state.totalClaims) });
-      if (lastSeenDifficulty !== -1n) {
-        console.log(`  difficulty ${lastSeenDifficulty} → ${difficulty}`);
-      }
-      lastSeenDifficulty = difficulty;
-    }
-
-    const t0 = Date.now();
-    const { nonce, attempts } = await mineNonce(state.lastHash as number[], kp.publicKey, difficulty);
-    const ata = getAssociatedTokenAddressSync(mintPDA, kp.publicKey);
-
     try {
+      let state = await fetchGlobalState(globalStatePDA);
+      for (let i = 0; i < 10 && Buffer.from(state.lastHash).toString("hex") === consumedHash; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        state = await fetchGlobalState(globalStatePDA);
+      }
+      const difficulty = BigInt(state.difficulty.toString());
+
+      // Difficulty transitions are the §6 evidence — record every change we see.
+      if (difficulty !== lastSeenDifficulty) {
+        emit({ event: "difficulty", difficulty: difficulty.toString(), totalClaims: Number(state.totalClaims) });
+        if (lastSeenDifficulty !== -1n) {
+          console.log(`\n  difficulty ${lastSeenDifficulty} → ${difficulty}`);
+        }
+        lastSeenDifficulty = difficulty;
+      }
+
+      const t0 = Date.now();
+      const { nonce, attempts } = await mineNonce(state.lastHash as number[], kp.publicKey, difficulty);
+      const mineMs = Date.now() - t0;
+      const ata = getAssociatedTokenAddressSync(mintPDA, kp.publicKey);
       const ix = await program.methods.claim(nonce, new BN(0))
         .accounts({
           feePayer: kp.publicKey,
@@ -264,63 +337,86 @@ async function main() {
         }).instruction();
       const sig = await sendAndConfirmTransaction(
         conn, new Transaction().add(ix), [kp], { commitment: "confirmed" });
-      lastClaimAt.set(key, Date.now());
+      nextEligible.set(key, Date.now() + walletGapMs);
+      consumedHash = Buffer.from(state.lastHash).toString("hex");
       emit({
-        event: "claim_ok", wallet: key, sig, attempts,
-        mineMs: Date.now() - t0, difficulty: difficulty.toString(),
+        event: "claim_ok", wallet: key, sig, attempts, mineMs,
+        confirmMs: Date.now() - t0 - mineMs, difficulty: difficulty.toString(),
       });
       return "ok";
-    } catch (err: any) {
-      // Codes are from the IDL error list, not guessed:
-      //   0x1771 InvalidProofOfWork — last_hash rotated under us. Expected
-      //          under contention, and its rate measures how crowded the
-      //          network is.
-      //   0x1773 RateLimitExceeded  — the on-chain cooldown. Benign; it mostly
-      //          appears after a restart, when the in-memory lastClaimAt map
-      //          has lost the history the chain still remembers.
-      //   0x1770 ContractPaused / 0x1772 SupplyCapReached — terminal. Neither
-      //          is retryable, and SupplyCapReached in particular means mining
-      //          is over; logging it as contention would have the pool hammer
-      //          a dead chain forever.
-      const msg = String(err?.message ?? err);
+    } catch (err) {
+      const code = programErrorCode(err);
+      // stale:     another claim landed after we read last_hash, or moved the
+      //            difficulty. Expected under contention; the wallet stays
+      //            eligible and retries on the next slot with fresh state.
+      // ratelimit: the on-chain cooldown, mostly right after a restart.
+      // terminal:  paused, or the supply cap is reached; the run stops.
       const kind: Outcome =
-        /InvalidProofOfWork|0x1771/.test(msg) ? "stale"
-        : /RateLimitExceeded|0x1773/.test(msg) ? "ratelimit"
-        : /SupplyCapReached|ContractPaused|0x1772|0x1770/.test(msg) ? "terminal"
+        code === INVALID_POW ? "stale"
+        : code === RATE_LIMITED ? "ratelimit"
+        : code !== undefined && TERMINAL.has(code) ? "terminal"
         : "error";
-      emit({ event: "claim_fail", wallet: key, kind, error: msg.slice(0, 200) });
+      if (kind === "ratelimit") nextEligible.set(key, Date.now() + walletGapMs);
+      else if (kind === "error") nextEligible.set(key, Date.now() + FAIL_BACKOFF_MS);
+      emit({
+        event: "claim_fail", wallet: key, kind, code: code ?? null,
+        error: (code !== undefined && errorNames.get(code)) || describeError(err).slice(0, 200),
+      });
       return kind;
     }
   }
 
+  /** The wallet whose rate-limit window closed first, and when it did. */
+  function pickWallet(): { kp: Keypair; readyAt: number } {
+    let kp = miners[0];
+    let readyAt = nextEligible.get(kp.publicKey.toBase58())!;
+    for (const m of miners) {
+      const at = nextEligible.get(m.publicKey.toBase58())!;
+      if (at < readyAt) { kp = m; readyAt = at; }
+    }
+    return { kp, readyAt };
+  }
+
   for (const phase of phases) {
     if (stopping) break;
-    const active = miners.slice(0, Math.min(phase.wallets, miners.length));
-    const until = Date.now() + phase.minutes * 60_000;
-    console.log(`\n── phase ${phase.label ?? ""}: ${active.length} wallets for ${phase.minutes}m ──`);
-    emit({ event: "phase_start", label: phase.label, wallets: active.length, minutes: phase.minutes });
+    const intervalMs = 60_000 / phase.claimsPerMin;
+    const start = Date.now();
+    const until = start + phase.minutes * 60_000;
+    console.log(`\n── phase ${phase.label ?? ""}: ${phase.claimsPerMin} claims/min for ${phase.minutes}m ──`);
+    emit({ event: "phase_start", label: phase.label, claimsPerMin: phase.claimsPerMin, minutes: phase.minutes });
 
-    const tally: Record<Outcome, number> = {
-      ok: 0, skip: 0, stale: 0, ratelimit: 0, error: 0, terminal: 0,
-    };
-    while (Date.now() < until && !stopping) {
-      const results = await Promise.all(
-        active.map((kp) => attemptClaim(kp).catch((): Outcome => "error")),
-      );
-      for (const r of results) tally[r]++;
-      // A terminal error is not something more mining can fix — stop rather
-      // than spin against a paused or exhausted chain.
-      if (results.includes("terminal")) {
+    const tally: Record<Outcome, number> = { ok: 0, stale: 0, ratelimit: 0, error: 0, terminal: 0 };
+    let slotAt = start;
+    while (!stopping) {
+      // The next slot on the schedule, or later if every wallet is still
+      // rate-limited (a pool too small for this rate).
+      const { kp, readyAt } = pickWallet();
+      const at = Math.max(slotAt, readyAt);
+      if (at >= until) break;
+      await sleepUntil(at);
+      if (stopping) break;
+
+      const outcome = await attemptClaim(kp);
+      tally[outcome]++;
+      // Nothing more mining can fix — stop rather than spin against a paused
+      // or exhausted program.
+      if (outcome === "terminal") {
         console.log("\n  terminal program error — stopping. See the log.");
         stopping = true;
       }
+      // A claim that overran its slot pushes the schedule back rather than
+      // being followed by a burst to catch up.
+      slotAt = Math.max(slotAt + intervalMs, Date.now());
+      const perMin = tally.ok / ((Date.now() - start) / 60_000);
       process.stdout.write(
-        `\r  ok=${tally.ok} stale=${tally.stale} ratelimit=${tally.ratelimit} ` +
-        `err=${tally.error} diff=${lastSeenDifficulty}   `,
-      );
-      await new Promise((r) => setTimeout(r, 2_000));
+        `\r  ok=${tally.ok} stale=${tally.stale} ratelimit=${tally.ratelimit} err=${tally.error}` +
+        `  ${perMin.toFixed(1)}/${phase.claimsPerMin} per min  diff=${lastSeenDifficulty}   `);
     }
-    emit({ event: "phase_end", label: phase.label, ...tally });
+    const achievedPerMin = tally.ok / ((Date.now() - start) / 60_000);
+    emit({
+      event: "phase_end", label: phase.label, ...tally,
+      claimsPerMin: phase.claimsPerMin, achievedPerMin: Number(achievedPerMin.toFixed(2)),
+    });
     console.log("");
   }
 

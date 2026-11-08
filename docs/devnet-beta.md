@@ -8,7 +8,7 @@
 
 Difficulty holds steady at `TARGET_CLAIMS_PER_WINDOW / TARGET_WINDOW` — 100 claims per 600s, i.e. **one claim every 6 seconds**. The devnet per-wallet rate limit is 60s, so one wallet contributes at most 1 claim/min.
 
-**Holding difficulty flat therefore needs ≥10 wallets mining continuously.** Below that every window expires under target, `factor < 1`, and difficulty halves. From the initial 4,096 that is eight halvings to the `MIN_DIFFICULTY` floor of 16 — roughly **80 minutes** — after which it pins and never moves again.
+**Holding difficulty flat therefore needs ≥10 wallets mining continuously.** Below that, difficulty falls, though not always by half. A full 600s window with N claims scales it by N/100, and the 2× clamp only stops it falling faster than half per adjustment: it halves at 50 claims per window or fewer (≤5 claims/min), while 8 claims/min takes off 20%. It also adjusts only when a claim lands, so with no mining at all it stays where it is. Under light but continuous mining it halves every 10 minutes and reaches the `MIN_DIFFICULTY` floor of 16 from the initial 4,096 in about **80 minutes**. Devnet sits at that floor today (difficulty 16, last claim 2026-10-24; checked 2026-11-07).
 
 Ten-plus strangers continuously mining a worthless devnet token is not a realistic recruitment target. So the beta is **driven, not observed**: we generate the load ourselves and use external testers for the things load cannot produce.
 
@@ -16,9 +16,11 @@ Ten-plus strangers continuously mining a worthless devnet token is not a realist
 
 ### A. Synthetic baseline — `scripts/devnet_load.ts`
 
-N wallets on a phase schedule, self-funded from the deployer, claiming at the rate limit. Keeps difficulty live and makes the network look alive to arriving testers.
+A schedule of claim rates, sent one claim at a time across a pool of wallets funded from the deployer. Keeps difficulty live and makes the network look alive to arriving testers.
 
-The wallet pool persists to `scripts/.devnet-load-wallets.json` so restarts reuse wallets that already hold a bond, ATA and `user_state` — re-creating them each run would waste rent and burn the relayer's per-wallet topup quota.
+**One claim in flight, because only one can land.** Every landed claim rotates `last_hash`, so claims mined against the same state race each other: one lands and the rest fail, and those that get past preflight still pay the fee. Wallets mining in parallel add collisions, not load. So the harness re-reads `last_hash` before every claim, sets load in claims per minute, and keeps a pool only because of the per-wallet rate limit. It reads that limit from chain and sizes the pool for the fastest phase: 24 wallets for 20 claims/min at 60s. Since the harness never collides with itself, a stale-nonce failure means a tester's claim landed first, so the stale rate measures real contention.
+
+The wallet pool persists to `scripts/.devnet-load-wallets.json` so restarts reuse wallets that already hold a bond, ATA and `user_state` instead of paying that rent again.
 
 The harness refuses to run against mainnet-beta (genesis-hash check), the same guard `mainnet-launch.sh` and the relayer endpoints use.
 
@@ -45,24 +47,22 @@ Every §6 criterion maps to an event the program already emits, so the checkboxe
 | Bond deposit/withdrawal exercised by external testers | `BondDeposited` / `BondWithdrawn` — distinct pubkeys, both bond kinds |
 | No critical bugs reported | Issue tracker plus a written triage rubric (below) |
 
-`devnet_load.ts` writes JSONL (`claim_ok`, `claim_fail`, `difficulty`, `phase_start/end`) so a run replays into the table above without a separate indexer.
+`devnet_load.ts` writes JSONL (`claim_ok`; `claim_fail` with the program error code and a kind of `stale`, `ratelimit`, `error` or `terminal`; `difficulty`; `phase_start/end` with the target and achieved rate) so a run replays into the table above without a separate indexer. A terminal error (program paused, or supply cap reached) stops the run.
 
 ## The load profile
 
-The default phase schedule in `devnet_load.ts`; override with `--phases <file>`.
+The default phase schedule in `devnet_load.ts`; override with `--phases <file>`. The target is 10 claims/min (100 per 600s window), so each rate is a multiple of it.
 
-| Phase | Wallets | Claims/min | Duration | Expected |
+| Phase | Claims/min | vs target | Duration | Expected |
 |---|---|---|---|---|
-| baseline | 12 | ~12 (target 10) | 60m | climbs, then self-equilibrates |
-| ramp-up | 30 | ~30 | 120m | climbs faster, bounded 2×/window |
-| drop | 2 | ~2 | 90m | halves each window |
-| recover | 12 | ~12 | 120m | returns toward baseline |
+| baseline | 10 | 1× | 60m | roughly steady |
+| ramp-up | 20 | 2× | 60m | doubles every ~5 min |
+| drop | 2 | 0.2× | 60m | halves every 10 min |
+| recover | 15 | 1.5× | 60m | ×1.5 every ~7 min |
 
-Adjustment is clamped to 2× per 600s window, so a floor-to-4096 climb needs eight sustained windows (~80 minutes). Size ramps accordingly — a 30-minute ramp proves nothing.
+The 2× clamp applies per adjustment, and an adjustment runs when the window reaches 100 claims or 600 seconds, whichever comes first. At 20 claims/min the window fills in about 5 minutes, so difficulty can double every ~5 minutes: floor to 4,096 is eight doublings, about 40 minutes. A ramp much shorter than that shows only a few adjustments.
 
-**Wallet count sets the claim *rate*, not the resting difficulty.** The harness staggers wallets so about one is eligible at a time, giving roughly `N` claims/min against the 10/min target. Any `N > 10` therefore pushes difficulty *up*, and it keeps rising until mining takes long enough that wallets start missing their 60s slots — so "baseline" settles after a climb rather than holding flat from the start. Let it settle before starting the ramp, or the ramp measures the tail of the baseline.
-
-**The resting point is bounded by the harness's hash rate, not by `N`.** Mining is single-threaded JavaScript shared across the whole pool, so beyond a few million difficulty the pool becomes CPU-bound, claims slow, and difficulty falls back. That ceiling is a property of the load generator, not of the protocol — don't read it as a protocol limit, and don't size a ramp that assumes difficulty can be pushed arbitrarily high. If you need a higher ceiling, run several copies on more cores — each with its own `WALLET_FILE` and `LOG_FILE`, so they use disjoint wallets and disjoint logs. Pointing two processes at the same pool file does not split the work: both slice from index 0, so they would mine the same wallets and collide on every claim.
+The harness mines on one CPU core (about 125k hashes/s on the machine it was tested on), and a claim takes `difficulty` hashes on average. That caps what each rate can sustain: at 20 claims/min there are 3 seconds per claim, so on devnet the climb flattens somewhere around 200k, where the achieved rate falls below target. Starting from the floor, the default ramp tops out near 65k, under that cap. `phase_end` records the achieved rate beside the target. The ceiling belongs to the load generator, not the protocol. A second copy on another core adds hashrate, but give it its own `WALLET_FILE` and `LOG_FILE` (two copies on one pool file would claim with the same wallets), and expect stale failures between them: the copies still race each other for `last_hash`.
 
 Run the ramp at least twice on different days. One run is an anecdote; two that agree are evidence.
 

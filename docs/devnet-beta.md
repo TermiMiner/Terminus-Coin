@@ -51,14 +51,18 @@ Every §6 criterion maps to an event the program already emits, so the checkboxe
 
 The default phase schedule in `devnet_load.ts`; override with `--phases <file>`.
 
-| Phase | Wallets | Duration | Expected |
-|---|---|---|---|
-| baseline | 12 | 60m | difficulty roughly stable |
-| ramp-up | 30 | 120m | climbs, bounded 2×/window |
-| drop | 2 | 90m | halves each window |
-| recover | 12 | 120m | returns toward baseline |
+| Phase | Wallets | Claims/min | Duration | Expected |
+|---|---|---|---|---|
+| baseline | 12 | ~12 (target 10) | 60m | climbs, then self-equilibrates |
+| ramp-up | 30 | ~30 | 120m | climbs faster, bounded 2×/window |
+| drop | 2 | ~2 | 90m | halves each window |
+| recover | 12 | ~12 | 120m | returns toward baseline |
 
 Adjustment is clamped to 2× per 600s window, so a floor-to-4096 climb needs eight sustained windows (~80 minutes). Size ramps accordingly — a 30-minute ramp proves nothing.
+
+**Wallet count sets the claim *rate*, not the resting difficulty.** The harness staggers wallets so about one is eligible at a time, giving roughly `N` claims/min against the 10/min target. Any `N > 10` therefore pushes difficulty *up*, and it keeps rising until mining takes long enough that wallets start missing their 60s slots — so "baseline" settles after a climb rather than holding flat from the start. Let it settle before starting the ramp, or the ramp measures the tail of the baseline.
+
+**The resting point is bounded by the harness's hash rate, not by `N`.** Mining is single-threaded JavaScript shared across the whole pool, so beyond a few million difficulty the pool becomes CPU-bound, claims slow, and difficulty falls back. That ceiling is a property of the load generator, not of the protocol — don't read it as a protocol limit, and don't size a ramp that assumes difficulty can be pushed arbitrarily high. If you need a higher ceiling, run several copies on more cores — each with its own `WALLET_FILE` and `LOG_FILE`, so they use disjoint wallets and disjoint logs. Pointing two processes at the same pool file does not split the work: both slice from index 0, so they would mine the same wallets and collide on every claim.
 
 Run the ramp at least twice on different days. One run is an anecdote; two that agree are evidence.
 

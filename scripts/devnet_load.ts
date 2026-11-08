@@ -215,14 +215,28 @@ async function main() {
   let stopping = false;
   process.on("SIGINT", () => { console.log("\nStopping after in-flight claims…"); stopping = true; });
 
+  // Seeded with a stagger rather than left empty. An empty map makes every
+  // wallet eligible on the first cycle: all N mine the same last_hash, all
+  // submit, one lands and rotates it, and the other N-1 fail InvalidProofOfWork.
+  // That never settles — only the winner's timestamp advances — so the pool
+  // burns N times the CPU per landed claim and fills the log with failures that
+  // look like breakage. Spreading first eligibility across the rate-limit window
+  // puts roughly one wallet in play at a time instead.
   const lastClaimAt = new Map<string, number>();
+  const t0run = Date.now();
+  miners.forEach((kp, i) => {
+    const offset = Math.round((i / Math.max(miners.length, 1)) * RATE_LIMIT_MS);
+    lastClaimAt.set(kp.publicKey.toBase58(), t0run - RATE_LIMIT_MS + offset);
+  });
   let lastSeenDifficulty = -1n;
 
-  /** One wallet's claim attempt. Returns true on a landed claim. */
-  async function attemptClaim(kp: Keypair): Promise<boolean> {
+  /** Outcome of one wallet's turn. Only "ok" means a claim landed. */
+  type Outcome = "ok" | "skip" | "stale" | "ratelimit" | "error" | "terminal";
+
+  async function attemptClaim(kp: Keypair): Promise<Outcome> {
     const key = kp.publicKey.toBase58();
     const since = Date.now() - (lastClaimAt.get(key) ?? 0);
-    if (since < RATE_LIMIT_MS) return false;
+    if (since < RATE_LIMIT_MS) return "skip";
 
     const state = await fetchGlobalState(globalStatePDA);
     const difficulty = BigInt(state.difficulty.toString());
@@ -255,15 +269,27 @@ async function main() {
         event: "claim_ok", wallet: key, sig, attempts,
         mineMs: Date.now() - t0, difficulty: difficulty.toString(),
       });
-      return true;
+      return "ok";
     } catch (err: any) {
-      // Expected and informative: last_hash rotates on every landed claim, so
-      // under contention a nonce can go stale mid-flight. The rate of these is
-      // itself a signal about how crowded the network is.
+      // Codes are from the IDL error list, not guessed:
+      //   0x1771 InvalidProofOfWork — last_hash rotated under us. Expected
+      //          under contention, and its rate measures how crowded the
+      //          network is.
+      //   0x1773 RateLimitExceeded  — the on-chain cooldown. Benign; it mostly
+      //          appears after a restart, when the in-memory lastClaimAt map
+      //          has lost the history the chain still remembers.
+      //   0x1770 ContractPaused / 0x1772 SupplyCapReached — terminal. Neither
+      //          is retryable, and SupplyCapReached in particular means mining
+      //          is over; logging it as contention would have the pool hammer
+      //          a dead chain forever.
       const msg = String(err?.message ?? err);
-      const stale = /InvalidNonce|InvalidProofOfWork|0x1771|0x1772/.test(msg);
-      emit({ event: "claim_fail", wallet: key, stale, error: msg.slice(0, 200) });
-      return false;
+      const kind: Outcome =
+        /InvalidProofOfWork|0x1771/.test(msg) ? "stale"
+        : /RateLimitExceeded|0x1773/.test(msg) ? "ratelimit"
+        : /SupplyCapReached|ContractPaused|0x1772|0x1770/.test(msg) ? "terminal"
+        : "error";
+      emit({ event: "claim_fail", wallet: key, kind, error: msg.slice(0, 200) });
+      return kind;
     }
   }
 
@@ -274,15 +300,27 @@ async function main() {
     console.log(`\n── phase ${phase.label ?? ""}: ${active.length} wallets for ${phase.minutes}m ──`);
     emit({ event: "phase_start", label: phase.label, wallets: active.length, minutes: phase.minutes });
 
-    let ok = 0, fail = 0;
+    const tally: Record<Outcome, number> = {
+      ok: 0, skip: 0, stale: 0, ratelimit: 0, error: 0, terminal: 0,
+    };
     while (Date.now() < until && !stopping) {
-      const results = await Promise.all(active.map((kp) => attemptClaim(kp).catch(() => false)));
-      ok += results.filter(Boolean).length;
-      fail += results.filter((r) => !r).length;
-      process.stdout.write(`\r  claims ok=${ok} fail/skip=${fail}  diff=${lastSeenDifficulty}   `);
+      const results = await Promise.all(
+        active.map((kp) => attemptClaim(kp).catch((): Outcome => "error")),
+      );
+      for (const r of results) tally[r]++;
+      // A terminal error is not something more mining can fix — stop rather
+      // than spin against a paused or exhausted chain.
+      if (results.includes("terminal")) {
+        console.log("\n  terminal program error — stopping. See the log.");
+        stopping = true;
+      }
+      process.stdout.write(
+        `\r  ok=${tally.ok} stale=${tally.stale} ratelimit=${tally.ratelimit} ` +
+        `err=${tally.error} diff=${lastSeenDifficulty}   `,
+      );
       await new Promise((r) => setTimeout(r, 2_000));
     }
-    emit({ event: "phase_end", label: phase.label, ok, fail });
+    emit({ event: "phase_end", label: phase.label, ...tally });
     console.log("");
   }
 

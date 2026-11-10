@@ -1,18 +1,24 @@
-//! Property tests for the program's pure arithmetic.
-//!
-//! The TypeScript suite in `tests/` checks these helpers against JavaScript
-//! re-implementations of the same formulas. A mirror shares its author's mental
-//! model: if the model is wrong, both sides agree and the test passes. These
-//! tests state what each helper must guarantee instead — an independent
-//! definition, a conservation law, a bound — and check it over randomized and
-//! boundary inputs.
-//!
-//! Run with `cargo test -p terminuscoin`. They run on the host; the module is
-//! compiled only under `cfg(test)` and is not part of the deployed program.
-//!
-//! No test dependencies on purpose: inputs come from a small deterministic
-//! generator below, so `Cargo.toml` and `Cargo.lock` are untouched and a
-//! failure reproduces exactly from the seed in the test.
+// Property tests for the program's pure arithmetic.
+//
+// The TypeScript suite in `tests/` checks these helpers against JavaScript
+// re-implementations of the same formulas. A mirror shares its author's mental
+// model: if the model is wrong, both sides agree and the test passes. These
+// tests state what each helper must guarantee instead — an independent
+// definition, a conservation law, a bound — and check it over randomized and
+// boundary inputs.
+//
+// Run with `cargo test -p terminuscoin`. They run on the host, and are compiled
+// only under `cfg(test)`: this file is pulled into `src/lib.rs` with `include!`
+// and is not part of the deployed program.
+//
+// It lives outside `src/` on purpose. Sec3 X-Ray reads every file under `src/`
+// with its own Rust grammar, which cannot parse this one and aborts the whole
+// scan, so `src/` holds only the program. `cargo fmt` does not follow
+// `include!` either; CI runs rustfmt on this file by name.
+//
+// No test dependencies on purpose: inputs come from a small deterministic
+// generator below, so `Cargo.toml` and `Cargo.lock` are untouched and a
+// failure reproduces exactly from the seed in the test.
 
 use super::*;
 

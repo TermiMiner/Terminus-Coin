@@ -98,6 +98,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.89.0"
+          components: rustfmt
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -108,9 +109,16 @@ jobs:
             target
           key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
 
-      # Host-side tests of the program's pure arithmetic
-      # (programs/terminuscoin/src/property_tests.rs). They need no Solana CLI
-      # and no validator; the integration-tests job below covers the handlers.
+      # The tests live outside src/ and are pulled into lib.rs with include!,
+      # because Sec3 X-Ray reads every file under src/ with its own grammar and
+      # cannot parse them. `cargo fmt` does not follow include!, so the file is
+      # checked by name here.
+      - name: rustfmt (test source)
+        run: rustfmt --edition 2021 --check programs/terminuscoin/unit-tests/property_tests.rs
+
+      # Host-side tests of the program's pure arithmetic. They need no Solana
+      # CLI and no validator; the integration-tests job below covers the
+      # handlers.
       - name: cargo test
         run: cargo test -p terminuscoin
 

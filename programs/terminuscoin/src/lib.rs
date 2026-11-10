@@ -1883,6 +1883,10 @@ pub enum ErrorCode {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 // Host-side property tests for the pure helpers above: `cargo test -p
 // terminuscoin`. Compiled only under cfg(test), so the deployed program does
-// not contain them.
+// not contain them. The source is kept outside src/ and included, not declared
+// as a module file, so that src/ holds only the program: Sec3 X-Ray reads every
+// file under src/ with its own grammar, which cannot parse the tests.
 #[cfg(test)]
-mod property_tests;
+mod property_tests {
+    include!("../unit-tests/property_tests.rs");
+}

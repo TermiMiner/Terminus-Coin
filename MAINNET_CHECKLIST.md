@@ -294,7 +294,7 @@ Trigger to completed audit is realistically **4–6 weeks** — scheduling, two 
 **Accepted risks of an unaudited deploy:**
 - **Irreversibility.** Pause and upgrade stop an exploit; they don't reverse it. TERM minted by an exploit stays minted, in wallets we don't control.
 - **`set_paused` covers `claim` only** — it is enforced in exactly one place. Two other instructions also mint and are **not** stopped by it:
-  - `claim_yield` — callable by any staker. Bounded by the staking treasury, so a bug drains stakers' yield rather than inflating supply without limit. It computes through `pending_yield`, whose result is cast `as u64` — a truncation, not a saturation. **Tested 2026-11-10** (`programs/terminuscoin/src/property_tests.rs`): the cast cannot drop bits until the exact value reaches 2^64, and the supply cap keeps the program more than 18,000× below that; over the whole input space the function only ever rounds a staker's yield *down*, so it cannot over-mint; and a model of the pool's bookkeeping stays solvent through random histories. That model is a hand-kept copy of the handlers, so the handlers' own lines are still unreviewed.
+  - `claim_yield` — callable by any staker. Bounded by the staking treasury, so a bug drains stakers' yield rather than inflating supply without limit. It computes through `pending_yield`, whose result is cast `as u64` — a truncation, not a saturation. **Tested 2026-11-10** (`programs/terminuscoin/unit-tests/property_tests.rs`): the cast cannot drop bits until the exact value reaches 2^64, and the supply cap keeps the program more than 18,000× below that; over the whole input space the function only ever rounds a staker's yield *down*, so it cannot over-mint; and a model of the pool's bookkeeping stays solvent through random histories. That model is a hand-kept copy of the handlers, so the handlers' own lines are still unreviewed.
   - `claim_team_vest` — team wallet only (`has_one = team_wallet`).
 
   Stopping either takes a program upgrade through the 2-of-3 multisig — hence the §2 rehearsal.
@@ -302,7 +302,7 @@ Trigger to completed audit is realistically **4–6 weeks** — scheduling, two 
 
 **Deploy the `audit-scope-v1` build,** so a later audit covers exactly what is live. If the program must change before deploy, re-cut the scope tag (`audit-scope-v2`) and update `docs/audit-scope-v1.md`; any post-deploy upgrade likewise moves what the audit must cover.
 
-On `main`, `lib.rs` is no longer byte-identical to the tag: a `#[cfg(test)]` declaration for the property tests was appended on 2026-11-10. It is compiled out of the deployed program and changes none of its logic, but until the tag is re-cut, build the deploy artifact from a checkout of the tag itself.
+On `main`, `lib.rs` is no longer byte-identical to the tag: a `#[cfg(test)]` block that includes the property tests was appended on 2026-11-10. It is compiled out of the deployed program — CI's build of the program has the same sha256 with and without it — but until the tag is re-cut, build the deploy artifact from a checkout of the tag itself.
 
 **Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer, docs and tests — never the program's logic); audit ref is tag `audit-scope-v1` (cut on the merge commit, `lib.rs` byte-identical to `1256c10`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
 

@@ -88,6 +88,32 @@ jobs:
           -D warnings
           -A unexpected_cfgs
 
+  unit-tests:
+    name: Rust property tests (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+
+      # Host-side tests of the program's pure arithmetic
+      # (programs/terminuscoin/src/property_tests.rs). They need no Solana CLI
+      # and no validator; the integration-tests job below covers the handlers.
+      - name: cargo test
+        run: cargo test -p terminuscoin
+
   cargo-audit:
     name: cargo-audit (RustSec advisories)
     runs-on: ubuntu-latest

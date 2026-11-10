@@ -113,6 +113,9 @@ yarn demo
 
 # Run the full test suite
 yarn test
+
+# Run the Rust property tests (host-side; no validator needed)
+cargo test -p terminuscoin
 ```
 
 ### Available yarn scripts

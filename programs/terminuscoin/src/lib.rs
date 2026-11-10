@@ -1879,3 +1879,10 @@ pub enum ErrorCode {
     #[msg("Rent payer does not match the rent_payer recorded on the bond account")]
     WrongRentPayer,
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+// Host-side property tests for the pure helpers above: `cargo test -p
+// terminuscoin`. Compiled only under cfg(test), so the deployed program does
+// not contain them.
+#[cfg(test)]
+mod property_tests;

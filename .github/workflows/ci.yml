@@ -43,6 +43,13 @@ jobs:
       - name: cargo build-sbf
         run: cargo build-sbf
 
+      # Printed so two runs can be compared: a change that is meant to leave the
+      # deployed program alone (docs, tests, tooling) has to leave this hash
+      # alone too. It is the hash of THIS CI build, not of the
+      # `anchor build --verifiable` artifact the launch checklist compares.
+      - name: Program binary sha256
+        run: sha256sum target/deploy/terminuscoin.so
+
       - name: Upload program binary
         uses: actions/upload-artifact@v4
         with:

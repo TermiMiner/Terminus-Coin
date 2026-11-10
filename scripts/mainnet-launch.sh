@@ -13,12 +13,17 @@
 #   • TS steps are invoked directly with explicit env — NOT via `yarn`, whose
 #     package.json scripts hardcode localhost/devnet (MAINNET_CHECKLIST item #4).
 #
-# It deliberately does NOT perform (separate, hardware-wallet / day-0 ceremonies
-# — the script stops and prints exact next steps):
-#   • the upgrade-authority + program-authority transfer to the Squads multisig
-#     and the freeze-authority sunset (MAINNET_CHECKLIST §1, §2),
-#   • Raydium liquidity seeding,
+# It deliberately does NOT perform (separate, hardware-wallet ceremonies — the
+# script stops and prints exact next steps):
+#   • the upgrade-authority, program-authority and freeze-authority transfers to
+#     the Squads multisig, and the later freeze-authority sunset
+#     (MAINNET_CHECKLIST §1, §2),
 #   • the Vercel env flip (VITE_RPC_URL / RPC_URL → mainnet).
+#
+# It also does NOT seed liquidity, and nothing it prints is a cue to. This is the
+# DEPLOY gate of a two-gate launch: the program goes live unaudited, with no
+# pool. The Raydium seed waits for the external audit (MAINNET_CHECKLIST, top of
+# file and §5).
 #
 # DEPLOYER must be a keypair FILE: the initialize/vesting/rate-limit steps run
 # through AnchorProvider, which cannot sign with a Ledger directly. Use a fresh
@@ -67,7 +72,7 @@ if [[ "$fail" == 1 ]]; then
   exit 1
 fi
 [[ -f "$WALLET" ]]          || { echo "ERROR: deployer keypair file not found: $WALLET"; exit 1; }
-[[ -f "$PROGRAM_BINARY" ]]  || { echo "ERROR: program binary not found: $PROGRAM_BINARY"; echo "Build the AUDITED binary first: anchor build --verifiable"; exit 1; }
+[[ -f "$PROGRAM_BINARY" ]]  || { echo "ERROR: program binary not found: $PROGRAM_BINARY"; echo "Build the scope-tag binary first: anchor build --verifiable"; exit 1; }
 [[ -f "$PROGRAM_KEYPAIR" ]] || { echo "ERROR: program keypair not found: $PROGRAM_KEYPAIR"; exit 1; }
 
 # ─── Pre-flight ───────────────────────────────────────────────────────────────
@@ -79,7 +84,9 @@ echo "Team wallet     : $TEAM_WALLET"
 echo "RPC             : $RPC"
 echo "Program ID      : $PROGRAM_ID"
 echo "Binary sha256   : $BINARY_SHA"
-echo "  ↳ MUST match the hash the auditor reproduced from 'anchor build --verifiable'."
+echo "  ↳ MUST match the 'anchor build --verifiable' hash you recorded for the scope tag"
+echo "    (audit-scope-v1 unless re-cut). No audit has happened at this gate: this is the"
+echo "    build a later audit will cover, so what you deploy has to be exactly it."
 
 # ─── Cluster verification: refuse to run off-mainnet ──────────────────────────
 section "Cluster verification"
@@ -132,22 +139,22 @@ else
     --program-id "$PROGRAM_KEYPAIR"
 fi
 
-# Post-deploy: confirm what LANDED on-chain equals the audited binary we hashed —
+# Post-deploy: confirm what LANDED on-chain equals the local binary we hashed —
 # `program show` checks only the authority, not the code. Runs on the
 # already-deployed path too. solana program dump can right-pad with zeros to the
 # account size, so compare only the first ORIG_SIZE bytes against the local .so.
-section "1b. Verify on-chain bytecode == audited binary"
+section "1b. Verify on-chain bytecode == the local binary hashed above"
 ONCHAIN_DUMP="$(mktemp)"
 solana program dump "$PROGRAM_ID" "$ONCHAIN_DUMP" --url "$RPC" >/dev/null
 ORIG_SIZE=$(stat -c%s "$PROGRAM_BINARY" 2>/dev/null || stat -f%z "$PROGRAM_BINARY")
 ONCHAIN_SHA=$(head -c "$ORIG_SIZE" "$ONCHAIN_DUMP" | sha256sum | awk '{print $1}')
 rm -f "$ONCHAIN_DUMP"
 if [[ "$ONCHAIN_SHA" != "$BINARY_SHA" ]]; then
-  echo "ERROR: on-chain bytecode sha256 ($ONCHAIN_SHA) != audited binary ($BINARY_SHA)."
-  echo "       What is deployed does NOT match the audited artifact — STOP and investigate."
+  echo "ERROR: on-chain bytecode sha256 ($ONCHAIN_SHA) != local binary ($BINARY_SHA)."
+  echo "       What is deployed does NOT match the build you verified — STOP and investigate."
   exit 1
 fi
-echo "✓ On-chain bytecode matches the audited binary (first $ORIG_SIZE bytes, sha256 $BINARY_SHA)."
+echo "✓ On-chain bytecode matches the local binary (first $ORIG_SIZE bytes, sha256 $BINARY_SHA)."
 
 # ─── 2. Initialize (mints NOTHING) ────────────────────────────────────────────
 section "2. Initialize program + stake pool + bond vault (initialize_program.ts — no mint)"
@@ -188,14 +195,23 @@ echo "Rate limit      : ${RATE_LIMIT_SECONDS}s per wallet"
 echo "Explorer        : https://explorer.solana.com/address/$PROGRAM_ID"
 echo ""
 echo "⚠ NOT done by this script — execute deliberately (MAINNET_CHECKLIST):"
-echo "  §1  Transfer UPGRADE authority to the Squads 2-of-3 multisig (hardware wallets):"
+echo "  §1  Transfer UPGRADE authority to the Squads 2-of-3 multisig (hardware wallets)."
+echo "      The vault is a PDA and cannot sign, so the CLI needs the skip flag — which also"
+echo "      removes its only check on the address. Verify <SQUADS_VAULT> character by character:"
 echo "        solana program set-upgrade-authority $PROGRAM_ID \\"
-echo "          --new-upgrade-authority <SQUADS_VAULT> --upgrade-authority $WALLET --url $RPC"
-echo "  §2  Transfer program authority to the same vault (propose_authority / accept_authority),"
-echo "      then plan the freeze-authority sunset (disable_freeze_authority, >=30 days in)."
-echo "  §4  Token metadata on Arweave (if you skipped step 5)."
-echo "  Liquidity: seed Raydium CPMM (5 SOL + 5M TERM) and burn the LP — atomically with mining open."
+echo "          --new-upgrade-authority <SQUADS_VAULT> --upgrade-authority $WALLET \\"
+echo "          --skip-new-upgrade-authority-signer-check --url $RPC"
+echo "  §2  Transfer program authority AND freeze authority to the same vault"
+echo "      (propose_authority / accept_authority, then propose_freeze_authority /"
+echo "      accept_freeze_authority). Until both land, $WALLET_PUBKEY still holds them."
+echo "      Then plan the freeze-authority sunset (disable_freeze_authority, >=30 days in)."
+echo "  §4  Token metadata on Arweave (if you skipped step 5). If step 5 ran, the Metaplex"
+echo "      update authority is the deployer key: move it to the vault before cold storage."
 echo "  UI: set VITE_RPC_URL (build env) and RPC_URL (functions) to mainnet on Vercel, then redeploy."
+echo ""
+echo "⛔ Do NOT seed liquidity now. This was the DEPLOY gate: the program is live and"
+echo "   unaudited, with no pool. The Raydium seed waits for the external audit"
+echo "   (MAINNET_CHECKLIST §5), and every announcement says 'unaudited' until then (§8)."
 echo ""
 echo "Verify before announcing (§9):"
 echo "  solana program show $PROGRAM_ID --url $RPC          # upgrade authority == vault"

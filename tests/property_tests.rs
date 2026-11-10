@@ -11,10 +11,11 @@
 // only under `cfg(test)`: this file is pulled into `src/lib.rs` with `include!`
 // and is not part of the deployed program.
 //
-// It lives outside `src/` on purpose. Sec3 X-Ray reads every file under `src/`
-// with its own Rust grammar, which cannot parse this one and aborts the whole
-// scan, so `src/` holds only the program. `cargo fmt` does not follow
-// `include!` either; CI runs rustfmt on this file by name.
+// It lives here, beside the TypeScript suite, and not in the program's own
+// directory, on purpose. Sec3 X-Ray reads every `.rs` file anywhere under
+// `programs/terminuscoin/` with its own Rust grammar, which cannot parse this
+// file and aborts the whole scan. `cargo fmt` does not follow `include!`
+// either; CI runs rustfmt on this file by name.
 //
 // No test dependencies on purpose: inputs come from a small deterministic
 // generator below, so `Cargo.toml` and `Cargo.lock` are untouched and a

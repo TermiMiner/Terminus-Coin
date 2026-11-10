@@ -10,7 +10,7 @@ Terminus Coin (TERM) — a Solana proof-of-work SPL token. Single Anchor program
 
 - **`programs/terminuscoin/src/lib.rs`** — ~1,880 LOC, ~25 instructions.
 - **Stack:** Anchor 0.32.0, **classic SPL Token** (`anchor_spl::token`, `Tokenkeg…` — `Program<Token>` throughout; 82-byte mint, no extensions), `init-if-needed`. Note: anchor-spl's `spl-token-2022` cargo feature is enabled but **unused** — the program has no token-2022 code paths, accounts, or extensions.
-- **Frozen commit:** the on-chain program is unchanged since `1256c10`. Audit ref: tag **`audit-scope-v1`** — `lib.rs` is byte-identical to `1256c10` at the tag (commits after `1256c10` touch only the frontend/relayer, docs and tests, never the program's logic). `git checkout audit-scope-v1`. On `main`, a test-only `#[cfg(test)]` block was appended to `lib.rs` after the tag; it is compiled out of the deployed program, and the tests themselves live outside `src/`.
+- **Frozen commit:** the on-chain program is unchanged since `1256c10`. Audit ref: tag **`audit-scope-v1`** — `lib.rs` is byte-identical to `1256c10` at the tag (commits after `1256c10` touch only the frontend/relayer, docs and tests, never the program's logic). `git checkout audit-scope-v1`. On `main`, a test-only `#[cfg(test)]` block was appended to `lib.rs` after the tag; it is compiled out of the deployed program, and the tests themselves live outside the program's directory.
 
 ### Subsystems to review
 1. **PoW `claim(nonce, relayer_tip_term)`** — nonce verified against a rotating `last_hash`; halving emission schedule; on-chain difficulty adjustment; lucky-bonus multiplier (`2^bits`); and an **atomic relayer-tip market** — the claim can tip N TERM (out of the mint) to whoever broadcasts the tx, capped at `MAX_TIP_TERM` = 5 TERM (hardcoded, not governance-settable).
@@ -36,7 +36,7 @@ Terminus Coin (TERM) — a Solana proof-of-work SPL token. Single Anchor program
 ## Existing assurance
 
 - **Anchor TypeScript integration test suite** (`tests/terminus-coin.ts`).
-- **Rust property tests** (`programs/terminuscoin/unit-tests/property_tests.rs`, added after the tag): 20 host-side tests that check the five pure helpers against independent definitions and conservation laws, plus a model of the staking pool's bookkeeping. Mutation-checked: 15 planted bugs, all caught.
+- **Rust property tests** (`tests/property_tests.rs`, added after the tag): 20 host-side tests that check the five pure helpers against independent definitions and conservation laws, plus a model of the staking pool's bookkeeping. Mutation-checked: 15 planted bugs, all caught.
 - **CI:** `cargo build-sbf`, `cargo fmt`, `cargo clippy -D warnings`, `cargo test`, `cargo audit`, and the integration suite against a local validator.
 - **Static analysis:** Sec3 X-Ray runs in CI and is clean except one baselined false positive (`IntegerDivOverflow` in the lucky-reward path — unsigned `u64::MAX / difficulty`, guarded so `difficulty >= 2`).
 

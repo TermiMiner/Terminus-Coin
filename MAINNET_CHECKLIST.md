@@ -2,6 +2,13 @@
 
 Operational items that must be completed before mainnet deploy. Listed in execution order, with the most consequential and irreversible items first. **Do not skip these on launch day.**
 
+> **Two launch gates (decided 2026-11-09).** Mainnet launches in two stages, and this checklist is split between them:
+>
+> 1. **Deploy** — program live, mining open, **no liquidity pool, explicitly unaudited.** Everything here except §5 and the liquidity seed.
+> 2. **Liquidity** — the external audit (§5) is complete and its critical/high findings resolved **before** any TERM market is seeded.
+>
+> The audit gates *liquidity*, not deployment. A pool is what turns a program bug into SOL leaving our control; without one, an exploit mints tokens nobody can sell. If demand never appears, the pool is never seeded and the audit is never needed. Rationale and accepted risks: §5.
+
 ---
 
 ## 1. Upgrade-authority sunset (non-reversible)
@@ -51,7 +58,7 @@ The full Squads 2-of-3 ceremony was rehearsed against the live devnet program us
 
 **What this did NOT cover:**
 - Hardware-wallet + Squads UI flow (rehearse when Ledgers arrive — that *is* the real ceremony)
-- Executing a `bpf_loader_upgradeable::Upgrade` instruction through the vault (i.e. actually shipping a code upgrade via multisig). Not launch-critical; defer until first real upgrade needed.
+- Executing a `bpf_loader_upgradeable::Upgrade` instruction through the vault (i.e. actually shipping a code upgrade via multisig). Originally judged not launch-critical. **It is under the two-gate launch (2026-11-09):** post-launch patching now stands in for the pre-launch audit, so the patch path must be proven before mainnet. Now a §2 checkbox.
 
 Scripts and state preserved at `/tmp/squads-dryrun/` for reference. Test signer pubkeys + test multisig (`7SZkb4Sdn5XSej1A534ugL4UPPgN7FoVyKtbw8JE5FVb`) remain on devnet — harmless.
 
@@ -165,7 +172,7 @@ Real possibility. TERM may not be valuable enough for community-relayer spread t
 
 ### Liquidity seeding
 
-**Decision:** seed Raydium CPMM with **5 SOL + 5M TERM** (implied price ~$0.00008/TERM, compute-cost-adjacent), burn the LP tokens at creation. Atomic with public mining open.
+**Decision:** seed Raydium CPMM with **5 SOL + 5M TERM** (implied price ~$0.00008/TERM, compute-cost-adjacent), burn the LP tokens at creation. **Gated on the audit (§5), not on mining open** — see Timing below.
 
 **Why these specific numbers:**
 - **5M TERM = 0.5% of total supply** — drawn from team's day-0 vesting tranche (50M TERM unlocked at launch; this uses 10% of that tranche)
@@ -174,7 +181,7 @@ Real possibility. TERM may not be valuable enough for community-relayer spread t
 - **Implied FDV at seed: ~$80k** — defensibly conservative for an unproven asset, characterizable as "we seeded near production cost, let the market discover upward"
 
 **Why this beats the alternatives:**
-- ❌ "No seed at all" — defensible, but leaves the TERM-fee relayer market dormant until someone else creates a pool. Could be week 1, could be never. $400 buys "relayer market viable from day 1."
+- ❌ "No seed at all" — defensible, but leaves the TERM-fee relayer market dormant until someone else creates a pool. Could be week 1, could be never. $400 buys "relayer market viable from day 1." **→ Accepted for the deploy stage (2026-11-09).** The two-gate launch takes this cost deliberately: until the audited seed, the relayer market is dormant and the project relayer is the only one. It earns TERM tips it cannot sell, so it runs on its SOL budget alone.
 - ❌ "Seed at $0.016/TERM" (earlier plan) — implied $16M FDV. Arb bots would drain the SOL out of the pool as price discovered downward to compute-cost-adjacent levels. Wealth transfer to arbitrageurs. **Avoided.**
 - ❌ "12-month LP timelock" (earlier plan) — illusory optionality (capital-constrained team won't realistically rebalance). Burn forecloses the decision and is unequivocal.
 
@@ -182,7 +189,11 @@ Real possibility. TERM may not be valuable enough for community-relayer spread t
 
 **Pool:** Raydium CPMM (xy=k). Largest TVL on Solana, most aggregator routing (Jupiter integrates by default), simplest UX. CLMM/Whirlpool migration is a v1.1 question once depth grows enough to justify range management.
 
-**Timing:** seed atomically with public mining open. Don't give team or insiders any pre-pool trading window — that's the worst possible launch optic.
+**Timing:** seed only once the audit (§5) is complete — the liquidity gate. The pool still opens atomically with trading: before the seed there is no market at all, so nobody, insiders included, gets a pre-pool trading window.
+
+**Third-party pools break that, and the gate cannot prevent them** — anyone can create a Raydium pool for any token. Two rules follow:
+- **A third-party TERM market is itself an audit trigger** (§5). It creates exactly the extractable value the gate exists to prevent, whether or not we seeded it.
+- **The team does not sell into a third-party pool before the official seed.** Otherwise the 50M day-0 tranche becomes the insider pre-pool window this section exists to rule out.
 
 **LP token management:** burn at creation. Permanent. No future operational burden. If the pool structure proves wrong later, additional LP can be added separately; the burned LP stays locked.
 
@@ -196,9 +207,9 @@ Real possibility. TERM may not be valuable enough for community-relayer spread t
 - On-chain code: ✅ shipped — `claim(nonce, relayer_tip_term)`, the `MAX_TIP_TERM` = 5 TERM hard cap, the `tip <= net_reward` invariant, and bond `rent_payer` tracking are all in `programs/terminuscoin/src/lib.rs`
 - Tests: ✅ covered in `tests/terminus-coin.ts` — atomic tip transfer alongside the claim, `TipExceedsCap`, `TipExceedsReward`, and the `rent_payer` deposit/withdraw paths
 - Devnet rollout: ✅ live (operator runbook proven on devnet 2026-06-12)
-- External audit: ⏳ in scope, not yet commissioned — see §5
+- External audit: ⏳ deferred to the liquidity gate (§5) — the tip market stays in scope for it
 - Bootstrap relayer infra: ✅ implemented in `miner-ui/api/relay.ts` — `BOOTSTRAP_MODE`, first-claim subsidy, `MIN_TIP_TERM` floor, deprecation signalling; ⏳ mainnet env configuration is still a launch-day step (§7)
-- Liquidity seeding: ⏳ day-0 launch action, executed atomically with mining open
+- Liquidity seeding: ⏳ gated on the audit — no longer a day-0 action (two-gate launch, top of file)
 
 ---
 
@@ -212,6 +223,10 @@ The program-level `authority` (separate from the Solana upgrade authority) contr
 - [ ] Use `propose_authority(SQUADS_VAULT)` from the current deployer key
 - [ ] `accept_authority()` from the Squads vault (requires 2-of-3 signers)
 - [ ] Verify on-chain: read GlobalState, confirm `authority == SQUADS_VAULT`
+
+**Incident-response rehearsal — launch-critical under the two-gate launch.** With no audit before deploy, these two levers *are* the safety net, and both run through the 2-of-3 hardware multisig. Rehearse them with the real Ledgers and time them: a pause that takes six hours to coordinate is not an emergency brake.
+- [ ] Emergency `set_paused(true)` signed through the Squads vault end to end, timed. Know what it does **not** stop — see §5, accepted risks.
+- [ ] A real program upgrade (`bpf_loader_upgradeable::Upgrade`) executed through the vault on devnet. The 2026-05-19 dry-run skipped this; it is now the only fix for anything the pause can't stop.
 
 **Freeze authority decision (2026-05-18):** hold at launch (on the multisig), burn after launch. Plan:
 - Day 0–N: `freeze_authority == SQUADS_VAULT` (lever available for emergency Sybil response)
@@ -248,11 +263,34 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 ---
 
-## 5. Security audit
+## 5. Security audit — gates liquidity, not deployment
 
+**Decision (2026-11-09):** the audit moves from a pre-deploy requirement to the **liquidity gate** (top of file). Deploy unaudited, with mining open and no pool; audit before any TERM market is seeded.
+
+**Why:** a miner risks almost nothing — a ~0.001 SOL bond and compute — so the usual case for an audit, protecting user funds, is weak before a market exists. The program is upgradeable (§1), so bugs found later are patchable. And the cost is out of proportion to the project's scale before traction. A Sec3 quote was received 2026-11-01 (held privately; lapsed 2026-11-08) and is the reference point when the gate is reached.
+
+**Gate — all three before seeding liquidity:**
 - [ ] External audit completed
 - [ ] All critical and high findings resolved
 - [ ] Audit report published
+
+**Triggers — commission the audit at the first of these:**
+- [ ] Define the demand signal **before launch** (e.g. sustained distinct miners over N days), so the call isn't made under pressure. *Threshold: TBD.*
+- The demand signal is met.
+- **Any TERM market appears, including a third-party pool.** That creates the extractable value the gate exists to prevent, whether or not we seeded it.
+
+Trigger to completed audit is realistically **4–6 weeks** — scheduling, two weeks of review, remediation — with value at risk throughout. Commission on the earliest trigger, not the latest.
+
+**Accepted risks of an unaudited deploy:**
+- **Irreversibility.** Pause and upgrade stop an exploit; they don't reverse it. TERM minted by an exploit stays minted, in wallets we don't control.
+- **`set_paused` covers `claim` only** — it is enforced in exactly one place. Two other instructions also mint and are **not** stopped by it:
+  - `claim_yield` — callable by any staker. Bounded by the staking treasury, so a bug drains stakers' yield rather than inflating supply without limit. It computes through `pending_yield`, whose result is cast `as u64` — a truncation, not a saturation; a priority target for property tests.
+  - `claim_team_vest` — team wallet only (`has_one = team_wallet`).
+
+  Stopping either takes a program upgrade through the 2-of-3 multisig — hence the §2 rehearsal.
+- **Disclosure.** The deploy must be described as unaudited (§8).
+
+**Deploy the `audit-scope-v1` build,** so a later audit covers exactly what is live. If the program must change before deploy, re-cut the scope tag (`audit-scope-v2`) and update `docs/audit-scope-v1.md`; any post-deploy upgrade likewise moves what the audit must cover.
 
 **Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer + docs, never the program); audit ref is tag `audit-scope-v1` (cut on the merge commit, `lib.rs` byte-identical to `1256c10`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
 
@@ -275,7 +313,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 ## 6. Closed beta on devnet
 
-**Plan:** [`docs/devnet-beta.md`](docs/devnet-beta.md) — tracks, load profile, triage rubric and the §6 evidence mapping. Runs **concurrently with the audit (§5)**, not after it; starting it late adds 30 serial days to launch for no reason.
+**Plan:** [`docs/devnet-beta.md`](docs/devnet-beta.md) — tracks, load profile, triage rubric and the §6 evidence mapping. **With the audit moved to the liquidity gate (§5), the beta is the principal pre-deploy assurance and sits on the deploy critical path** — 30 days from its start is the earliest the deploy gate can close.
 
 > The second criterion below is not satisfiable by waiting. Difficulty holds steady only at 100 claims / 600s (one every 6s), and the 60s per-wallet rate limit caps a wallet at 1 claim/min — so **≥10 wallets must mine continuously** just to hold difficulty flat. Below that it falls (by half per window at ≤5 claims/min) to the floor of 16, where devnet sits now. `scripts/devnet_load.ts` drives that load at set claim rates; see the plan.
 
@@ -348,6 +386,7 @@ The burner is a **HOT wallet** (secret key in `localStorage`, readable by any ex
 - [ ] Landing page (description, tokenomics, mining instructions, links to UI/explorer)
 - [ ] Initial announcement post drafted
 - [ ] **Describe the trust model accurately** — the program is **multisig-gated upgradeable** (upgrades require the Squads 2-of-3 hardware multisig, → DAO later per §1), NOT "immutable" / "non-upgradeable." Publish: "no single party can unilaterally change the code; upgrades require 2-of-3 hardware signers." True immutability would be the `--final` path §1 deliberately rejects — don't imply it.
+- [ ] **Say "unaudited" plainly** until the liquidity gate (§5) closes — landing page, announcement, and the miner UI. Implying an audit that hasn't happened is worse than not auditing. When the audit lands, publish the report and update this wording the same day.
 
 ---
 
@@ -356,9 +395,9 @@ The burner is a **HOT wallet** (secret key in `localStorage`, readable by any ex
 - [ ] Run a sanity claim from a fresh wallet on mainnet
 - [ ] Confirm metadata appears correctly in Phantom and Solscan
 - [ ] Confirm `solana program show <PROGRAM_ID>` shows the expected upgrade authority
-- [ ] **Confirm on-chain bytecode == the audited build** — `solana program dump <PROGRAM_ID> /tmp/onchain.so --url <RPC>`, then compare `sha256sum` of its first N bytes (N = size of the `anchor build --verifiable` artifact) to that artifact, or run `solana-verify`. `mainnet-launch.sh` does this automatically right after deploy; re-run here if the program was deployed outside the script. (Verifies the *code* — `program show` only checks the authority.)
+- [ ] **Confirm on-chain bytecode == the `audit-scope-v1` build** (there is no audited build yet at the deploy gate; this is the frozen commit any later audit will cover) — `solana program dump <PROGRAM_ID> /tmp/onchain.so --url <RPC>`, then compare `sha256sum` of its first N bytes (N = size of the `anchor build --verifiable` artifact) to that artifact, or run `solana-verify`. `mainnet-launch.sh` does this automatically right after deploy; re-run here if the program was deployed outside the script. (Verifies the *code* — `program show` only checks the authority.)
 - [ ] Confirm `getAccountInfo` for GlobalState shows expected values (initial difficulty, total_minted = 100M reserved for team, etc.)
-- [ ] Confirm the `initialize` tx logs show the correct economics (`Burn 0.25-5pct | Treasury 3pct`, hard cap, emission, team) — init-log strings audited + corrected 2026-06-06 (commit `54501a4`; only `Burn 1pct` was stale, the rest were already accurate). `initialize` runs **once** on a non-upgradeable program, so this log is permanent: spot-check the init tx on Solscan before announcing.
+- [ ] Confirm the `initialize` tx logs show the correct economics (`Burn 0.25-5pct | Treasury 3pct`, hard cap, emission, team) — init-log strings audited + corrected 2026-06-06 (commit `54501a4`; only `Burn 1pct` was stale, the rest were already accurate). `initialize` runs **once** — its `init` constraint on GlobalState can never fire again, even across upgrades — so this log is permanent: spot-check the init tx on Solscan before announcing.
 - [ ] Verify miner-ui can connect, derive PDAs, and submit a real claim
 
 ---

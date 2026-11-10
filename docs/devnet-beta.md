@@ -1,6 +1,6 @@
 # Devnet closed beta — plan
 
-*Satisfies [`MAINNET_CHECKLIST.md`](../MAINNET_CHECKLIST.md) §6. Runs concurrently with the external audit (§5), not after it.*
+*Satisfies [`MAINNET_CHECKLIST.md`](../MAINNET_CHECKLIST.md) §6. With the audit moved to the liquidity gate (§5), this beta is the principal pre-deploy assurance.*
 
 ## Why this needs a plan at all
 
@@ -68,7 +68,7 @@ Run the ramp at least twice on different days. One run is an anecdote; two that 
 
 ## Operating rules
 
-**Do not change `programs/terminuscoin/src/lib.rs` while the audit is in flight.** The engagement is frozen at tag `audit-scope-v1`; a mid-audit program change invalidates the report and the scope every quote was priced against. Beta findings in the program go into the **remediation round**. Frontend and relayer fixes are out of audit scope and can ship any time.
+**Treat `programs/terminuscoin/src/lib.rs` as frozen at `audit-scope-v1`.** The audit is deferred to the liquidity gate, but it will cover the tagged commit — so deploy that build, and keep what is live and what gets audited the same thing. A program bug found in the beta should be fixed before deploy; when one is, re-cut the scope tag (`audit-scope-v2`) so the eventual audit targets the deployed code. Frontend and relayer fixes are out of audit scope and can ship any time.
 
 **Fund synthetic wallets from the deployer, not `/api/topup`.** The relayer defaults to `MAX_TOPUPS_PER_IP_PER_HR=5`; a harness starting 20 wallets from one IP throttles itself and consumes quota real testers need.
 
@@ -92,6 +92,6 @@ A critical or high finding in the program resets the "no critical bugs" clock; o
 
 ## Timeline
 
-Thirty days from a start in early November completes in early December. The audit runs mid-to-late November through early-to-mid December plus remediation, so the two overlap almost entirely and beta findings can fold into the remediation round rather than becoming post-audit changes.
+Thirty days from the beta's start is the earliest the deploy gate can close. The audit is no longer on that path — it gates liquidity, not deployment (`MAINNET_CHECKLIST.md` §5).
 
-The audit is the critical path. The beta is not — provided it starts now.
+**The beta is now the critical path to deploy.** Every day it isn't running pushes the earliest mainnet date back by a day.

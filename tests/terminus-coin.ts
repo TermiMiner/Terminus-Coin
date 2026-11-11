@@ -1328,8 +1328,17 @@ describe("terminuscoin – full feature suite", () => {
       expect(relayerDelta.toString()).to.equal(TIP.toString());
       // Miner still nets positive (net_reward - tip > 0)
       expect(Number(minerDelta)).to.be.greaterThan(0);
-      // Sanity: bonus_bits=1 gives net ~6.58 TERM, so miner_delta ~1.58 TERM
-      expect(Number(minerDelta)).to.be.lessThan(50_000_000); // ceiling check on EV
+      // ...and keeps exactly this block's net reward minus the tip. The
+      // expectation follows the block's own bonus, because bonus_bits >= 1 is
+      // only a floor: one such draw in 16 has 5 bits or more, which nets over
+      // 100 TERM. A fixed 50 TERM ceiling here failed on those runs.
+      const gross = 3_400_000n << BigInt(bonusBits);
+      const burn = gross * BigInt(burnBpsForDifficulty(state.difficulty)) / 10_000n;
+      const treasury = gross * 300n / 10_000n;
+      expect(minerDelta).to.equal(
+        gross - burn - treasury - BigInt(TIP.toString()),
+        `bonus_bits=${bonusBits}`,
+      );
       console.log(`        bonus_bits=${bonusBits} miner_delta=${minerDelta} relayer_delta=${relayerDelta}`);
     });
 

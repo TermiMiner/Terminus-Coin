@@ -1,0 +1,139 @@
+name: Beta bug report
+description: Something broke, looked wrong, or was confusing while you tested the devnet beta.
+title: "[beta] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. One problem per report, please. Several short reports are easier to act on than one long one.
+
+        Before you file, check the [tester guide](https://github.com/TermiMiner/Terminus-Coin/blob/main/docs/beta-testing.md#expected-behavior-not-a-bug). It lists things that look like bugs and are not.
+
+        **Never paste a private key or seed phrase here.** This page is public. Your wallet's public address is fine.
+
+        **Found a way to take or lock someone else's funds, create TERM out of nothing, or do something only the project's admin key should be able to do?** Leave the details out. Write one line saying you have a security finding, add a private way to reach you (a Discord handle is enough), and we will contact you.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+      placeholder: |
+        I pressed START MINING with a new burner wallet and expected a claim within a minute or two.
+        Instead the log kept printing "Submitting claim…" and nothing landed for ten minutes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen again
+      description: If it happened once and you cannot repeat it, say so. That is still worth reporting.
+      placeholder: |
+        1. Open the site in a private window
+        2. Press START MINING
+        3. ...
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How serious does it look?
+      description: Your best guess. We set the final level when we triage.
+      options:
+        - "Critical: TERM or SOL was lost, stuck, or sent to the wrong wallet"
+        - "High: a rule the project states was broken, but nothing was lost"
+        - "Medium: something failed or misbehaved, and nothing was lost"
+        - "Low: wording, layout, or something confusing"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did it happen?
+      options:
+        - Mining (starting, claims, the log)
+        - Wallet (burner, Phantom, Solflare, Backpack, Ledger)
+        - Relayer and routing (gasless mining, tips, top-up)
+        - Withdraw TERM
+        - Staking
+        - Help text and wording
+        - Somewhere else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: wallet
+    attributes:
+      label: Which wallet were you using?
+      options:
+        - Burner made by the site
+        - Burner from an imported key
+        - Phantom
+        - Solflare
+        - Backpack
+        - Ledger through Phantom
+        - Ledger through Solflare
+        - Another wallet (name it above)
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and device
+      placeholder: Chrome 131 on Windows 11, or Safari on an iPhone 15
+    validations:
+      required: true
+
+  - type: input
+    id: address
+    attributes:
+      label: Wallet address
+      description: The public address at the top of the page, beside the BURNER tag or the wallet button. It lets us look up what happened on-chain. Never a private key.
+
+  - type: textarea
+    id: signature
+    attributes:
+      label: Transaction signature
+      description: If a transaction was involved. The log shows only the first 16 characters, so paste those if they are all you have. For the full signature, search your wallet address at https://explorer.solana.com/?cluster=devnet and copy it from the transaction history.
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log lines
+      description: Copy the lines from the log panel around the time it went wrong.
+      render: text
+
+  - type: dropdown
+    id: fees
+    attributes:
+      label: How were network fees being paid?
+      description: The MODE line in the ROUTING section says which.
+      options:
+        - "A relayer paid them (MODE: VIA SHARED RELAYER)"
+        - "The wallet paid them (MODE: SELF-FUND)"
+        - Something else, or not sure
+
+  - type: input
+    id: when
+    attributes:
+      label: When did it happen?
+      description: Date, time and time zone. It lets us match your report against relayer logs and devnet outages.
+      placeholder: 14 Nov 2026, about 21:30 UTC
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots, or anything else
+      description: Drag images into the box. Check first that no private key is visible in them.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: This report contains no private key or seed phrase, in the text or in any screenshot.
+          required: true

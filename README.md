@@ -80,10 +80,6 @@ Mutually exclusive — Anchor's `init` constraint enforces one BondAccount per w
 
 The authority's `set_rate_limit` lever stays active during bootstrap (year 0–1) and is automatically ignored after **year 1 (PHASE2_ACTIVATION_SECS)** — the bond plus PoW make it redundant, and a permanent authority-set rate limit would be a censorship vector.
 
-## Difficulty adjustment
-
-Target: 100 claims per 600s window. Window fills before expiry → +1 bit; window expires before fill → −1 bit. Range 1–28. Initial: 12.
-
 ## Layout
 
 ```

@@ -30,11 +30,16 @@ The harness refuses to run against mainnet-beta (genesis-hash check), the same g
 
 - wallet variety — Phantom, Solflare, Backpack, Ledger
 - browser and OS spread
-- the bond deposit → cooldown → withdraw cycle, both SOL and TERM bonds
+- the bond deposit, which the site bundles into a wallet's first claim, both self-funded and relayer-paid
 - the TERM sweep to a self-custody address
+- staking, unstaking and claiming yield
 - copy that reads as confusing or alarming to someone who has never mined
 
-Tell them up front that `BOND_WITHDRAW_COOLDOWN` is 3,600s, so withdrawal is blocked for an hour after their last claim. Otherwise it gets filed as a bug.
+What they are sent is [`beta-testing.md`](beta-testing.md): how to start, what to try, and a list of behavior that looks like a bug and is not. Reports come in through the GitHub issue form (`.github/ISSUE_TEMPLATE/bug_report.yml`), whose severity question follows the rubric below. Recruitment drafts are in [`beta-recruitment-post.md`](beta-recruitment-post.md).
+
+**Testers cannot withdraw a bond, or use the TERM bond.** The site has no control for `withdraw_bond`, `deposit_bond_term` or `withdraw_bond_term`; the exit flow was descoped (`MAINNET_CHECKLIST.md` §7). So the withdraw half of §6's fourth criterion cannot come from testers as things stand. Either the site gains a withdrawal control, or the team exercises withdrawal of both bond kinds on devnet with a script and the criterion is narrowed to match. Two facts for whoever does it: withdrawal is blocked for `BOND_WITHDRAW_COOLDOWN` (3,600s) after the wallet's last claim, and the rent goes back to whoever paid it, which is the relayer for a wallet that started gasless.
+
+**The default path leaves a tester with no SOL, which blocks two things.** A burner that mines through the relayer never holds SOL. Withdrawing TERM needs a little in the wallet, and the site says so. A wallet's first stake does too, about 0.0015 SOL, because `stake` creates the stake account with `payer = authority`; the site does not say so, and the stake fails at the relayer's simulation. The guide gives the workaround (`[ SELF-FUND ]`, then `[ TOP UP BURNER ]`). Expect reports about it anyway.
 
 ### C. Evidence collection
 
@@ -44,7 +49,7 @@ Every §6 criterion maps to an event the program already emits, so the checkboxe
 |---|---|
 | 30 days of operation with multiple miners | `ClaimMined` — distinct `miner` pubkeys per day, uptime calendar |
 | Difficulty adjustment under varying load | `DifficultyAdjusted` — `old`/`new`/`claims_in_window`/`window_seconds` across the ramp |
-| Bond deposit/withdrawal exercised by external testers | `BondDeposited` / `BondWithdrawn` — distinct pubkeys, both bond kinds |
+| Bond deposit/withdrawal exercised by external testers | `BondDeposited` — distinct pubkeys. `BondWithdrawn`, and deposits of the TERM kind, can only come from the team until the site offers them (see Track B) |
 | No critical bugs reported | Issue tracker plus a written triage rubric (below) |
 
 `devnet_load.ts` writes JSONL (`claim_ok`; `claim_fail` with the program error code and a kind of `stale`, `ratelimit`, `error` or `terminal`; `difficulty`; `phase_start/end` with the target and achieved rate) so a run replays into the table above without a separate indexer. A terminal error (program paused, or supply cap reached) stops the run.
@@ -86,7 +91,7 @@ A critical or high finding in the program resets the "no critical bugs" clock; o
 
 ## Dependencies
 
-**§6 needs part of §8.** Testers have to be recruited and their reports collected somewhere, and Discord/X are still unchecked. Minimum viable: a Discord server plus a GitHub issue template.
+**§6 needs part of §8.** Testers have to be recruited and their reports collected somewhere. The GitHub issue form now exists; Discord and X are still unchecked. Minimum viable: a Discord server, so that testers have somewhere to ask questions.
 
 **There is no allocation bucket to pay testers from.** Tokenomics is 900M mining + 100M team = 100% of supply; there is no community or airdrop reserve. Promising mainnet TERM for testing would mean taking it from the team tranches or changing the cap — immediately before an audit priced against the current numbers. Offer recognition instead: credit in the launch post, an early-contributor role.
 

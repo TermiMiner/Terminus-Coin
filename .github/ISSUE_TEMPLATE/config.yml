@@ -1,0 +1,6 @@
+# Blank issues stay on: questions and ideas that are not bugs still need a way in.
+blank_issues_enabled: true
+contact_links:
+  - name: Tester guide
+    url: https://github.com/TermiMiner/Terminus-Coin/blob/main/docs/beta-testing.md
+    about: How to start mining on devnet, what to try, and what is expected behavior.

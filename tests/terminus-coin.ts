@@ -1054,6 +1054,89 @@ describe("terminuscoin – full feature suite", () => {
         expect(err.message).to.include("BondLocked");
       }
     });
+
+    it("withdraw_bond_term returns the 20 TERM to the miner and the rent to its payer, once", async () => {
+      // The success path of the only instruction that pays TERM out of the
+      // shared bond vault. freshWallet above has claimed, so its bond is inside
+      // the hour-long cooldown and can only show the rejection. A wallet that
+      // bonds and never claims has last_claim_time = 0, so its cooldown has
+      // already passed — the same route the SOL-bond success test takes.
+      const miner = anchor.web3.Keypair.generate(); // never holds any SOL
+      const sponsor = anchor.web3.Keypair.generate(); // pays the bond account's rent
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(sponsor.publicKey, 1_000_000_000)
+      );
+      const minerAta = await createAssociatedTokenAccount(
+        provider.connection, wallet.payer, mint, miner.publicKey
+      );
+      const { createTransferInstruction } = await import("@solana/spl-token");
+      await provider.sendAndConfirm(
+        new anchor.web3.Transaction().add(
+          createTransferInstruction(userTokenAccount, minerAta, wallet.publicKey, TERM_BOND_AMOUNT)
+        )
+      );
+
+      // freshWallet's locked bond must already be in the vault, or the checks
+      // below could not tell "paid out one bond" from "emptied the vault".
+      const vaultStart = await getAccount(provider.connection, bondVaultPDA);
+      expect(Number(vaultStart.amount)).to.be.at.least(TERM_BOND_AMOUNT);
+      const sponsorStart = await provider.connection.getBalance(sponsor.publicKey);
+
+      await program.methods.depositBondTerm()
+        .accounts({
+          userTokenAccount: minerAta,
+          authority: miner.publicKey,
+          rentPayer: sponsor.publicKey,
+        })
+        .signers([miner, sponsor])
+        .rpc();
+
+      const minerBonded = await getAccount(provider.connection, minerAta);
+      const vaultBonded = await getAccount(provider.connection, bondVaultPDA);
+      expect(Number(minerBonded.amount)).to.equal(0);
+      expect(Number(vaultBonded.amount) - Number(vaultStart.amount)).to.equal(TERM_BOND_AMOUNT);
+
+      // rent_payer is auto-resolved by Anchor from bond_account.rent_payer
+      await program.methods.withdrawBondTerm()
+        .accounts({
+          userTokenAccount: minerAta,
+          authority: miner.publicKey,
+        })
+        .signers([miner])
+        .rpc();
+
+      // The miner has its 20 TERM back, and only that bond left the vault.
+      const minerAfter = await getAccount(provider.connection, minerAta);
+      const vaultAfter = await getAccount(provider.connection, bondVaultPDA);
+      expect(Number(minerAfter.amount)).to.equal(TERM_BOND_AMOUNT);
+      expect(Number(vaultAfter.amount)).to.equal(Number(vaultStart.amount));
+
+      // The bond account is closed, and its rent went to the sponsor rather
+      // than to the miner.
+      expect(await provider.connection.getAccountInfo(bondPDA(miner.publicKey))).to.equal(null);
+      expect(await provider.connection.getBalance(miner.publicKey)).to.equal(0);
+      const sponsorAfter = await provider.connection.getBalance(sponsor.publicKey);
+      expect(sponsorStart - sponsorAfter).to.be.lessThan(50_000); // rent refunded
+
+      // With the bond gone, a second withdrawal is rejected and moves nothing.
+      // rentPayer is passed by hand: Anchor can no longer read it from the
+      // closed bond account.
+      try {
+        await program.methods.withdrawBondTerm()
+          .accounts({
+            userTokenAccount: minerAta,
+            authority: miner.publicKey,
+            rentPayer: sponsor.publicKey,
+          } as any)
+          .signers([miner])
+          .rpc();
+        throw new Error("Should have failed");
+      } catch (err: any) {
+        expect(err.message).to.match(/AccountNotInitialized|3012|0xbc4|already initialized/i);
+      }
+      const vaultFinal = await getAccount(provider.connection, bondVaultPDA);
+      expect(Number(vaultFinal.amount)).to.equal(Number(vaultAfter.amount));
+    });
   });
 
   // ─── TERM-fee relayer market ──────────────────────────────────────────────

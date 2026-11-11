@@ -118,7 +118,7 @@ cargo test -p terminuscoin
 
 | Command | Purpose |
 |---|---|
-| `yarn test` | Full test suite (44 tests, ~90s) |
+| `yarn test` | Full test suite (45 tests, ~90s) |
 | `yarn demo` | Initialize program + stake pool + bond + 3 sanity claims (idempotent) |
 | `yarn vesting --team-wallet <PUBKEY>` | Reserve 100M for team vesting (idempotent) |
 | `yarn rate-limit <seconds>` | Set per-wallet claim cooldown |

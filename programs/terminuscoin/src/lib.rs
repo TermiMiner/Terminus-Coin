@@ -1879,3 +1879,15 @@ pub enum ErrorCode {
     #[msg("Rent payer does not match the rent_payer recorded on the bond account")]
     WrongRentPayer,
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+// Host-side property tests for the pure helpers above: `cargo test -p
+// terminuscoin`. Compiled only under cfg(test), so the deployed program does
+// not contain them. The source is kept in the repo's top-level tests/ and
+// included, not declared as a module file here: Sec3 X-Ray reads every .rs
+// file anywhere under this program's directory with its own grammar, which
+// cannot parse the tests and aborts the scan.
+#[cfg(test)]
+mod property_tests {
+    include!("../../../tests/property_tests.rs");
+}

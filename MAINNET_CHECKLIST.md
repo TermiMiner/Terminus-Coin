@@ -18,26 +18,21 @@ Operational items that must be completed before mainnet deploy. Listed in execut
 **Decision (2026-05-18):** option (a) — Squads multisig, **2-of-3**, all three signers on hardware wallets. Signers: Aaron + two trusted contributors. Hardware wallets being sourced.
 
 **Mainnet ceremony:**
-```
-solana program set-upgrade-authority <PROGRAM_ID> \
-  --new-upgrade-authority <SQUADS_VAULT_PUBKEY> \
-  --upgrade-authority <CURRENT_DEPLOYER_KEY> \
-  --url mainnet-beta
-```
-
-> **Verify after the change:**
-> ```
-> solana program show <PROGRAM_ID> --url mainnet-beta
-> ```
-> The `Upgrade Authority` field should show the Squads vault address.
+- [ ] Three hardware wallets in hand, one per signer; all three signers confirmed and reachable on launch day
+- [ ] Squads 2-of-3 multisig created on mainnet from those three keys; the vault address recorded, and read back independently by a second signer
+- [ ] Hardware-wallet + Squads UI flow rehearsed on devnet with the real devices (the 2026-05-19 dry-run below used software signers)
+- [ ] Upgrade authority transferred to the vault:
+  ```
+  solana program set-upgrade-authority <PROGRAM_ID> \
+    --new-upgrade-authority <SQUADS_VAULT_PUBKEY> \
+    --upgrade-authority <CURRENT_DEPLOYER_KEY> \
+    --skip-new-upgrade-authority-signer-check \
+    --url mainnet-beta
+  ```
+  The vault is a PDA and cannot sign, so the CLI refuses without `--skip-new-upgrade-authority-signer-check` (phase 3 of the dry-run used it; this command previously omitted it). That flag also removes the CLI's only check on the address: a wrong `<SQUADS_VAULT_PUBKEY>` hands the program to nobody, irreversibly. Verify it character by character.
+- [ ] `solana program show <PROGRAM_ID> --url mainnet-beta` shows the vault as `Upgrade Authority`
 
 **Path NOT chosen:** option (b) `--final` lockdown was rejected to preserve the ability to ship security fixes. Same multisig will eventually transfer authority to a DAO (Realms / SPL Governance) on a 24-36 month horizon.
-
-> **Verify after the change:**
-> ```
-> solana program show <PROGRAM_ID> --url mainnet-beta
-> ```
-> The `Upgrade Authority` field should show the multisig address (option a) or `none` (option b).
 
 ---
 
@@ -223,6 +218,8 @@ The program-level `authority` (separate from the Solana upgrade authority) contr
 - [ ] Use `propose_authority(SQUADS_VAULT)` from the current deployer key
 - [ ] `accept_authority()` from the Squads vault (requires 2-of-3 signers)
 - [ ] Verify on-chain: read GlobalState, confirm `authority == SQUADS_VAULT`
+- [ ] **Hand over the freeze authority as well** — `propose_freeze_authority(SQUADS_VAULT)` from the deployer key, then `accept_freeze_authority()` from the vault. `initialize` sets *both* authorities to the deployer, and the handoff above moves only the program authority. Without this step the plan below (`freeze_authority == SQUADS_VAULT`) is not true, and a single cold-storage key can freeze any wallet's claims until the sunset.
+- [ ] Verify on-chain: `freeze_authority == SQUADS_VAULT`
 
 **Incident-response rehearsal — launch-critical under the two-gate launch.** With no audit before deploy, these two levers *are* the safety net, and both run through the 2-of-3 hardware multisig. Rehearse them with the real Ledgers and time them: a pause that takes six hours to coordinate is not an emergency brake.
 - [ ] Emergency `set_paused(true)` signed through the Squads vault end to end, timed. Know what it does **not** stop — see §5, accepted risks.
@@ -244,15 +241,27 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
 
 ## 3. Deployer wallet hygiene
 
-- [ ] **Mainnet deployer must be a fresh hardware-wallet keypair** — not the devnet wallet, which has been used in scripts/CI/etc.
-- [ ] Wallet has ≥4 SOL of mainnet SOL
-- [ ] After deploy, the deployer keypair file should be moved off-line (cold storage)
+- [ ] **Mainnet deployer is a fresh keypair *file*, generated for this launch and used for nothing else** — not the devnet wallet, which has been used in scripts/CI/etc. It cannot be a hardware wallet (this line used to ask for one): `mainnet-launch.sh` signs the initialize, vesting and rate-limit steps through AnchorProvider, which cannot sign with a Ledger. The key holds every authority only until §1 and §2 hand them to the hardware multisig, so do those as soon as the script finishes.
+- [ ] Wallet has ≥4.5 SOL of mainnet SOL (the launch script refuses to start below that)
+- [ ] The deployer keypair file is moved off-line (cold storage) — **after** the §1 and §2 handoffs and the §4 metadata-authority transfer. Until all three are done it still controls something.
+
+### Team wallet — permanent, choose it before launch
+
+`initialize_vesting` records the team wallet exactly once: the account is created with `init`, and no instruction can change it afterwards. That wallet receives 50M TERM at launch and 100M over ten years, and `claim_team_vest` is not stopped by the pause (§5).
+
+- [ ] The team wallet is a multisig vault or a hardware wallet — not a keypair file on a laptop. A lost key strands the 50M that vest from year 5 on; a stolen one claims them. *If it is a Squads vault:* `scripts/claim_team_vest.ts` signs with a keypair file and will not work, so the claim has to be built as a Squads transaction — rehearse one on devnet first.
+- [ ] The address passed to `mainnet-launch.sh <TEAM_WALLET_PUBKEY>` has been verified character by character against a second, independent source. A wrong address cannot be corrected.
 
 ---
 
 ## 4. Token metadata
 
-- [ ] Logo PNG, ≥512×512, ≤200 KB
+- [ ] Logo final: ≥512×512, ≤200 KB. The asset in the repo is `metadata/logo.jpg`: 1024×1024 and 202,501 bytes (198 KiB), so right at the size limit. It is a **JPEG** (this line used to say PNG; `metadata/README.md` allows either), and `term.json` declares `image/jpeg`, so a re-export as PNG has to change the declared type too.
+- [ ] **`metadata/term.json` finalized before it is uploaded.** An Arweave upload is permanent, and the file still carries devnet-era values:
+  - `image` and `properties.files[0].uri` point at jsDelivr — replace with the Arweave URL of the logo
+  - `extensions.twitter` and `extensions.discord` are empty — fill in once §8's accounts exist
+  - `external_url` and `extensions.website` say `terminuscoin.xyz` — confirm that domain is registered and is the one §7 wires up
+  - `description` says "Per-wallet two-step authority transfer"; the two-step transfer applies to the program and freeze authorities, not to wallets
 - [ ] Metaplex JSON uploaded to **Arweave** (not GitHub/jsdelivr — those expire; Arweave is permanent)
 - [ ] Attach metadata after the init sequence — call the script DIRECTLY, never `yarn metadata` (the yarn script hardcodes localhost/devnet env, and that inline assignment overrides any prefix, so it silently targets the wrong cluster):
   ```
@@ -260,6 +269,7 @@ Rationale: freeze is a "stop further earning" lever, not an asset freeze. `claim
     npx ts-node -P tsconfig.json scripts/create_metadata.ts --uri <ARWEAVE_URL>
   ```
   (This is the exact command `mainnet-launch.sh` prints when `METADATA_URI` is deferred.)
+- [ ] **Metaplex update authority moved off the deployer key.** `create_metadata` makes its caller the update authority, and `mainnet-launch.sh` runs it as the deployer, before the §2 handoff — which moves the program authority, not this one. Left alone, a single cold-storage key can rename the token or swap its logo at any time. Transfer the update authority to the Squads vault before the deployer key is retired. (If metadata is attached *after* §2 instead, only the vault can call `create_metadata`, and the vault holds the update authority from the start.)
 
 ---
 
@@ -284,7 +294,7 @@ Trigger to completed audit is realistically **4–6 weeks** — scheduling, two 
 **Accepted risks of an unaudited deploy:**
 - **Irreversibility.** Pause and upgrade stop an exploit; they don't reverse it. TERM minted by an exploit stays minted, in wallets we don't control.
 - **`set_paused` covers `claim` only** — it is enforced in exactly one place. Two other instructions also mint and are **not** stopped by it:
-  - `claim_yield` — callable by any staker. Bounded by the staking treasury, so a bug drains stakers' yield rather than inflating supply without limit. It computes through `pending_yield`, whose result is cast `as u64` — a truncation, not a saturation; a priority target for property tests.
+  - `claim_yield` — callable by any staker. Bounded by the staking treasury, so a bug drains stakers' yield rather than inflating supply without limit. It computes through `pending_yield`, whose result is cast `as u64` — a truncation, not a saturation. **Tested 2026-11-10** (`tests/property_tests.rs`): the cast cannot drop bits until the exact value reaches 2^64, and the supply cap keeps the program more than 18,000× below that; over the whole input space the function only ever rounds a staker's yield *down*, so it cannot over-mint; and a model of the pool's bookkeeping stays solvent through random histories. That model is a hand-kept copy of the handlers, so the handlers' own lines are still unreviewed.
   - `claim_team_vest` — team wallet only (`has_one = team_wallet`).
 
   Stopping either takes a program upgrade through the 2-of-3 multisig — hence the §2 rehearsal.
@@ -292,7 +302,9 @@ Trigger to completed audit is realistically **4–6 weeks** — scheduling, two 
 
 **Deploy the `audit-scope-v1` build,** so a later audit covers exactly what is live. If the program must change before deploy, re-cut the scope tag (`audit-scope-v2`) and update `docs/audit-scope-v1.md`; any post-deploy upgrade likewise moves what the audit must cover.
 
-**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer + docs, never the program); audit ref is tag `audit-scope-v1` (cut on the merge commit, `lib.rs` byte-identical to `1256c10`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
+On `main`, `lib.rs` is no longer byte-identical to the tag: a `#[cfg(test)]` block that includes the property tests was appended on 2026-11-10. It is compiled out of the deployed program — CI's build of the program has the same sha256 with and without it — but until the tag is re-cut, build the deploy artifact from a checkout of the tag itself.
+
+**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer, docs and tests — never the program's logic); audit ref is tag `audit-scope-v1` (cut on the merge commit, `lib.rs` byte-identical to `1256c10`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
 
 > **Scope note:** the relayer-tip market is implemented in `claim()` and is in scope — it materially affects the quote. (§1's Status block previously described it as unwritten; corrected 2026-09-13.)
 

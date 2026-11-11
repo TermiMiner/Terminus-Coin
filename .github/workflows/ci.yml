@@ -43,6 +43,13 @@ jobs:
       - name: cargo build-sbf
         run: cargo build-sbf
 
+      # Printed so two runs can be compared: a change that is meant to leave the
+      # deployed program alone (docs, tests, tooling) has to leave this hash
+      # alone too. It is the hash of THIS CI build, not of the
+      # `anchor build --verifiable` artifact the launch checklist compares.
+      - name: Program binary sha256
+        run: sha256sum target/deploy/terminuscoin.so
+
       - name: Upload program binary
         uses: actions/upload-artifact@v4
         with:
@@ -80,6 +87,40 @@ jobs:
           cargo clippy --workspace --all-targets --
           -D warnings
           -A unexpected_cfgs
+
+  unit-tests:
+    name: Rust property tests (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+          components: rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+
+      # The tests live in the top-level tests/ and are pulled into lib.rs with
+      # include!, because Sec3 X-Ray reads every .rs file under the program's
+      # directory with its own grammar and cannot parse them. `cargo fmt` does
+      # not follow include!, so the file is checked by name here.
+      - name: rustfmt (test source)
+        run: rustfmt --edition 2021 --check tests/property_tests.rs
+
+      # Host-side tests of the program's pure arithmetic. They need no Solana
+      # CLI and no validator; the integration-tests job below covers the
+      # handlers.
+      - name: cargo test
+        run: cargo test -p terminuscoin
 
   cargo-audit:
     name: cargo-audit (RustSec advisories)

@@ -113,6 +113,9 @@ yarn demo
 
 # Run the full test suite
 yarn test
+
+# Run the Rust property tests (host-side; no validator needed)
+cargo test -p terminuscoin
 ```
 
 ### Available yarn scripts
@@ -126,7 +129,12 @@ yarn test
 | `yarn metadata [--uri <URL>]` | Attach Metaplex token metadata (idempotent) |
 | `yarn measure` | Measure compute units + fee for a single claim |
 
-All scripts default to `http://127.0.0.1:8899`. Override with `ANCHOR_PROVIDER_URL` for devnet/mainnet.
+These `yarn` scripts always target the local validator: each one pins `ANCHOR_PROVIDER_URL=http://127.0.0.1:8899` and the devnet wallet inline, and an inline assignment beats anything you set in front of `yarn`. For devnet or mainnet, call the script directly with explicit env:
+
+```bash
+ANCHOR_PROVIDER_URL=<rpc> ANCHOR_WALLET=<keypair.json> \
+  npx ts-node -P tsconfig.json scripts/<script>.ts
+```
 
 ## Devnet launch
 

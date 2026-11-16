@@ -72,7 +72,7 @@ if [[ "$fail" == 1 ]]; then
   exit 1
 fi
 [[ -f "$WALLET" ]]          || { echo "ERROR: deployer keypair file not found: $WALLET"; exit 1; }
-[[ -f "$PROGRAM_BINARY" ]]  || { echo "ERROR: program binary not found: $PROGRAM_BINARY"; echo "Build the scope-tag binary first: anchor build --verifiable"; exit 1; }
+[[ -f "$PROGRAM_BINARY" ]]  || { echo "ERROR: program binary not found: $PROGRAM_BINARY"; echo "Build it from a checkout of audit-scope-v2 with Solana 3.1.12: anchor build"; exit 1; }
 [[ -f "$PROGRAM_KEYPAIR" ]] || { echo "ERROR: program keypair not found: $PROGRAM_KEYPAIR"; exit 1; }
 
 # ─── Pre-flight ───────────────────────────────────────────────────────────────
@@ -84,9 +84,10 @@ echo "Team wallet     : $TEAM_WALLET"
 echo "RPC             : $RPC"
 echo "Program ID      : $PROGRAM_ID"
 echo "Binary sha256   : $BINARY_SHA"
-echo "  ↳ MUST match the 'anchor build --verifiable' hash you recorded for the scope tag"
-echo "    (audit-scope-v1 unless re-cut). No audit has happened at this gate: this is the"
-echo "    build a later audit will cover, so what you deploy has to be exactly it."
+echo "  ↳ MUST be the audit-scope-v2 build (Solana 3.1.12; MAINNET_CHECKLIST §5):"
+echo "    3679aaf2494298916a7fed98725d10096a4bcfec01d90dc1a74f3a0e2c852985"
+echo "    No audit has happened at this gate: this is the build a later audit will cover,"
+echo "    so what you deploy has to be exactly it."
 
 # ─── Cluster verification: refuse to run off-mainnet ──────────────────────────
 section "Cluster verification"

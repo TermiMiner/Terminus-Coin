@@ -101,7 +101,7 @@ starting design if a concrete need ever revives it:
 ## Out of scope / notes
 - **token-2022:** N/A — TERM is classic SPL. Hardcoding `TOKEN_PROGRAM_ID` for
   Phase 1 is correct and simplest (the program is byte-frozen at
-  `audit-scope-v1`). Deriving the token program from the mint owner at runtime is
+  `audit-scope-v2`). Deriving the token program from the mint owner at runtime is
   nice future-proofing but unnecessary while the mint program can't change.
 - **CEX destinations:** TERM is **unlisted** — an exchange can't accept deposits
   until it lists the token. Realistic destinations are self-custody wallets

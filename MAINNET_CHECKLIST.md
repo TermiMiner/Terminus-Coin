@@ -300,15 +300,26 @@ Trigger to completed audit is realistically **4–6 weeks** — scheduling, two 
   Stopping either takes a program upgrade through the 2-of-3 multisig — hence the §2 rehearsal.
 - **Disclosure.** The deploy must be described as unaudited (§8).
 
-**Deploy the `audit-scope-v1` build,** so a later audit covers exactly what is live. If the program must change before deploy, re-cut the scope tag (`audit-scope-v2`) and update `docs/audit-scope-v1.md`; any post-deploy upgrade likewise moves what the audit must cover.
+**Deploy the `audit-scope-v2` build,** so a later audit covers exactly what is live. If the program must change before deploy, re-cut the scope tag again (`audit-scope-v3`) and update `docs/audit-scope-v2.md`; any post-deploy upgrade likewise moves what the audit must cover.
 
-On `main`, `lib.rs` is no longer byte-identical to the tag: a `#[cfg(test)]` block that includes the property tests was appended on 2026-11-10. It is compiled out of the deployed program — CI's build of the program has the same sha256 with and without it — but until the tag is re-cut, build the deploy artifact from a checkout of the tag itself.
+**Why v2 (re-cut 2026-11-16).** `audit-scope-v1` and `main` had drifted apart in two ways that left the program's logic alone but changed what gets built:
+- A `#[cfg(test)]` block that includes the property tests was appended to `lib.rs` on 2026-11-10. It is compiled out of the deployed program: CI's build has the same sha256 with and without it.
+- `ctutils` went from 0.4.2 to 0.4.5 in `Cargo.lock` on 2026-10-25 (#2) for RUSTSEC-2026-0385, and the program links it (`solana-program` → `blake3` → `digest` → `ctutils`). That changed the binary: with Solana 3.1.12 a checkout of v1 builds `d1b12d92aa0bb2e48c7816f387b86beadff60280a325435bb2a045b2213ffc62`, and `main` builds `3679aaf2494298916a7fed98725d10096a4bcfec01d90dc1a74f3a0e2c852985`. The 0.4.4 and 0.4.5 fixes are to constant-time code generation and to `u128` comparisons on 32-bit targets. The program holds no secrets and SBF is a 64-bit target, so they very likely change nothing here, but v1's build would have shipped a version with a published advisory.
 
-**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Frozen as of commit `1256c10` (later commits touch only frontend/relayer, docs and tests — never the program's logic); audit ref is tag `audit-scope-v1` (cut on the merge commit, `lib.rs` byte-identical to `1256c10`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md).
+v2 is cut on `main`, so the tag, CI, devnet and mainnet are one source.
+- [x] **Decide which build ships** — `audit-scope-v2` (2026-11-16).
+
+**The v2 build is `3679aaf2494298916a7fed98725d10096a4bcfec01d90dc1a74f3a0e2c852985`** (630,544 bytes), built with Solana 3.1.12. It is the binary CI builds on every commit and runs the integration suite against, and it reproduces: the CI runner, a second machine, and the Anchor verifiable-build image with the same toolchain all give those bytes (checked 2026-11-16).
+- From a checkout of the tag with Solana 3.1.12 installed: `anchor build`, giving `target/deploy/terminuscoin.so`.
+- Or in Docker, without installing Solana: `anchor build --verifiable --solana-version 3.1.12`, giving `target/verifiable/terminuscoin.so`. Copy it to `target/deploy/` for the launch script. The 2026-11-16 check ran this build in the same image with the same Solana release mounted in; the flag itself, which downloads that release, was not run. Run it once and confirm the hash.
+- **`anchor build --verifiable` without the pin fails, and always has.** Its image carries Solana 2.3.0, whose cargo (1.84) cannot read `cpufeatures` 0.3.0, an edition-2024 crate that has been in `Cargo.lock` since the first commit. `solana-verify` picks its toolchain a different way and will need the same care; that was not checked.
+- `mainnet-launch.sh` checks this hash before it touches the cluster and refuses to deploy anything else. It deploys `target/deploy/terminuscoin.so`.
+
+**Scope:** on-chain program only — `programs/terminuscoin/src/lib.rs` (~1,880 LOC, ~25 instructions). Program logic frozen as of commit `1256c10` (later commits touch only frontend/relayer, docs, scripts and tests — never the program's logic); audit ref is tag `audit-scope-v2`, cut on the merge commit of the pull request that introduced it (`lib.rs` byte-identical to `4c8bd4e`, `Cargo.lock` to `e32fae9`). Full reusable scope statement (paste into quote requests): [`docs/audit-scope-v2.md`](docs/audit-scope-v2.md).
 
 > **Scope note:** the relayer-tip market is implemented in `claim()` and is in scope — it materially affects the quote. (§1's Status block previously described it as unwritten; corrected 2026-09-13.)
 
-**Firm shortlist + quote-ask criteria:** see [`docs/audit-scope-v1.md`](docs/audit-scope-v1.md) — the tiered shortlist (budget / contest / premium) and the five quote-ask items live there, so there's a single source of truth.
+**Firm shortlist + quote-ask criteria:** see [`docs/audit-scope-v2.md`](docs/audit-scope-v2.md) — the tiered shortlist (budget / contest / premium) and the five quote-ask items live there, so there's a single source of truth.
 
 ### Dependency advisories (`npm audit`) — triaged 2026-06-08, re-triaged 2026-07-13
 
@@ -333,6 +344,14 @@ On `main`, `lib.rs` is no longer byte-identical to the tag: a `#[cfg(test)]` blo
 - [ ] No critical bugs reported
 - [ ] Difficulty adjustment observed working under varying load
 - [ ] Bond deposit/withdrawal flows exercised by external testers
+  - ⚠️ **Cannot be met as written (found 2026-11-11).** The miner UI deposits the SOL bond with a wallet's first claim, but has no control for withdrawing a bond and none for the TERM bond: §7 descoped the exit flow. Testers can exercise deposit only. Decide between adding a withdrawal control to the UI and narrowing this line to deposit, with the team exercising withdrawal of both kinds on devnet by script. The integration suite runs both withdrawals on a local validator for a bond that never claimed, and the rejections while a cooldown is active. Nothing in this repo runs a withdrawal *after* a claim, once the hour has passed.
+
+- [ ] **Devnet runs the build that will ship** (§5), so the 30 days of evidence accrue on the binary that goes to mainnet.
+  - **Not yet (checked 2026-11-16).** Devnet's program was last deployed 2026-05-31 23:29 UTC and is commit `3b10270` byte for byte: rebuilding `3b10270` with Solana 3.1.12 reproduces the on-chain sha256, `93c0260affcfa4aac4d2b463ad368b96bbe7c0d20aa9ed511428f946aa2103c0`. `audit-scope-v2` is four program commits and one lockfile change later. With formatting and comments stripped, the program commits change one `initialize` log string and rewrite one loop in `claim_team_vest` to an equivalent iterator, so devnet behaves like the tag but is not its bytes. Upgrade it to the v2 build, `3679aaf2…` (§5). The instruction interface is the same, so an upgrade keeps all state and needs no change to the site or the load harness. The devnet upgrade authority is `BmorV43rrjPVfm5pJRvs6d9ytqsx2cxTn656n1J2aNDs`. Verify afterwards with the bytecode comparison in §9.
+
+**Tester materials (2026-11-11):** guide [`docs/beta-testing.md`](docs/beta-testing.md), bug report form `.github/ISSUE_TEMPLATE/bug_report.yml`, recruitment drafts [`docs/beta-recruitment-post.md`](docs/beta-recruitment-post.md).
+
+**Hosting checked 2026-11-16:** `terminus-coin.vercel.app` serves the app to an anonymous visitor (no Vercel login), and its bundle points at a devnet RPC. `/api/relayer-info` answers with the rate-limit store enabled, bootstrap mode on, a 0.5 TERM tip floor and a balance of 0.242 SOL. That balance covers about 55 gasless first claims or 32 top-ups, so top the relayer up before recruiting: 15 testers who each mine and then stake would use most of it.
 
 ---
 
@@ -407,7 +426,7 @@ The burner is a **HOT wallet** (secret key in `localStorage`, readable by any ex
 - [ ] Run a sanity claim from a fresh wallet on mainnet
 - [ ] Confirm metadata appears correctly in Phantom and Solscan
 - [ ] Confirm `solana program show <PROGRAM_ID>` shows the expected upgrade authority
-- [ ] **Confirm on-chain bytecode == the `audit-scope-v1` build** (there is no audited build yet at the deploy gate; this is the frozen commit any later audit will cover) — `solana program dump <PROGRAM_ID> /tmp/onchain.so --url <RPC>`, then compare `sha256sum` of its first N bytes (N = size of the `anchor build --verifiable` artifact) to that artifact, or run `solana-verify`. `mainnet-launch.sh` does this automatically right after deploy; re-run here if the program was deployed outside the script. (Verifies the *code* — `program show` only checks the authority.)
+- [ ] **Confirm on-chain bytecode == the `audit-scope-v2` build** (there is no audited build yet at the deploy gate; this is the frozen commit any later audit will cover) — `solana program dump <PROGRAM_ID> /tmp/onchain.so --url <RPC>`, then check that `sha256sum` of its first 630,544 bytes is `3679aaf2494298916a7fed98725d10096a4bcfec01d90dc1a74f3a0e2c852985` (§5), or run `solana-verify` with its toolchain pinned as §5 describes. `mainnet-launch.sh` does this automatically right after deploy; re-run here if the program was deployed outside the script. (Verifies the *code* — `program show` only checks the authority.)
 - [ ] Confirm `getAccountInfo` for GlobalState shows expected values (initial difficulty, total_minted = 100M reserved for team, etc.)
 - [ ] Confirm the `initialize` tx logs show the correct economics (`Burn 0.25-5pct | Treasury 3pct`, hard cap, emission, team) — init-log strings audited + corrected 2026-06-06 (commit `54501a4`; only `Burn 1pct` was stale, the rest were already accurate). `initialize` runs **once** — its `init` constraint on GlobalState can never fire again, even across upgrades — so this log is permanent: spot-check the init tx on Solscan before announcing.
 - [ ] Verify miner-ui can connect, derive PDAs, and submit a real claim

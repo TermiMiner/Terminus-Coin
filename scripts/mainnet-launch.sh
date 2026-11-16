@@ -7,6 +7,8 @@
 #   • The cluster's genesis hash is verified to be mainnet-beta before anything
 #     touches chain.
 #   • Every irreversible step needs an explicit "yes".
+#   • The program binary must be the scope-tag build: its sha256 is pinned below
+#     and anything else is refused before the cluster is touched.
 #   • Initialize uses initialize_program.ts, which mints NOTHING — no insider
 #     pre-launch balance (the devnet pow_demo sanity-mine is intentionally NOT
 #     used here).
@@ -46,6 +48,11 @@ METADATA_URI="${METADATA_URI:-}"
 PROGRAM_ID="FfA5srQxRjZtTpZ1qq2Rivkp6PaRRii3R9712onMJH5Y"
 PROGRAM_KEYPAIR="$(dirname "$0")/../target/deploy/terminuscoin-keypair.json"
 PROGRAM_BINARY="$(dirname "$0")/../target/deploy/terminuscoin.so"
+# The scope tag and the sha256 of its build with Solana 3.1.12, the hash CI
+# prints on every run. Change both together when the scope tag is re-cut
+# (MAINNET_CHECKLIST §5).
+SCOPE_TAG="audit-scope-v2"
+SCOPE_BINARY_SHA256="3679aaf2494298916a7fed98725d10096a4bcfec01d90dc1a74f3a0e2c852985"
 RATE_LIMIT_SECONDS=60
 MIN_SOL_REQUIRED=4.5
 MAINNET_GENESIS="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
@@ -72,7 +79,7 @@ if [[ "$fail" == 1 ]]; then
   exit 1
 fi
 [[ -f "$WALLET" ]]          || { echo "ERROR: deployer keypair file not found: $WALLET"; exit 1; }
-[[ -f "$PROGRAM_BINARY" ]]  || { echo "ERROR: program binary not found: $PROGRAM_BINARY"; echo "Build the scope-tag binary first: anchor build --verifiable"; exit 1; }
+[[ -f "$PROGRAM_BINARY" ]]  || { echo "ERROR: program binary not found: $PROGRAM_BINARY"; echo "Build it from a checkout of $SCOPE_TAG with Solana 3.1.12: anchor build"; exit 1; }
 [[ -f "$PROGRAM_KEYPAIR" ]] || { echo "ERROR: program keypair not found: $PROGRAM_KEYPAIR"; exit 1; }
 
 # ─── Pre-flight ───────────────────────────────────────────────────────────────
@@ -84,9 +91,16 @@ echo "Team wallet     : $TEAM_WALLET"
 echo "RPC             : $RPC"
 echo "Program ID      : $PROGRAM_ID"
 echo "Binary sha256   : $BINARY_SHA"
-echo "  ↳ MUST match the 'anchor build --verifiable' hash you recorded for the scope tag"
-echo "    (audit-scope-v1 unless re-cut). No audit has happened at this gate: this is the"
-echo "    build a later audit will cover, so what you deploy has to be exactly it."
+if [[ "$BINARY_SHA" != "$SCOPE_BINARY_SHA256" ]]; then
+  echo "ERROR: that is not the $SCOPE_TAG build, whose sha256 is"
+  echo "       $SCOPE_BINARY_SHA256."
+  echo "       Check out $SCOPE_TAG and build with Solana 3.1.12 (anchor build); MAINNET_CHECKLIST §5"
+  echo "       has the Docker alternative. No audit has happened at this gate: this is the build a"
+  echo "       later audit will cover, so what you deploy has to be exactly it."
+  exit 1
+fi
+echo "  ↳ ✓ the $SCOPE_TAG build (MAINNET_CHECKLIST §5). No audit has happened at this gate:"
+echo "    this is the build a later audit will cover."
 
 # ─── Cluster verification: refuse to run off-mainnet ──────────────────────────
 section "Cluster verification"

@@ -73,7 +73,7 @@ Run the ramp at least twice on different days. One run is an anecdote; two that 
 
 ## Operating rules
 
-**Treat `programs/terminuscoin/src/lib.rs` as frozen at `audit-scope-v1`.** The audit is deferred to the liquidity gate, but it will cover the tagged commit — so deploy that build, and keep what is live and what gets audited the same thing. A program bug found in the beta should be fixed before deploy; when one is, re-cut the scope tag (`audit-scope-v2`) so the eventual audit targets the deployed code. Frontend and relayer fixes are out of audit scope and can ship any time.
+**Treat `programs/terminuscoin/src/lib.rs` as frozen at `audit-scope-v1`.** The audit is deferred to the liquidity gate, but it will cover the tagged commit — so deploy that build, and keep what is live and what gets audited the same thing. A program bug found in the beta should be fixed before deploy; when one is, re-cut the scope tag (`audit-scope-v2`) so the eventual audit targets the deployed code. Frontend and relayer fixes are out of audit scope and can ship any time. As of 2026-11-16 devnet runs an earlier build, commit `3b10270`, which behaves the same but is not the tag's bytes; upgrading it is a §6 item in the checklist.
 
 **Fund synthetic wallets from the deployer, not `/api/topup`.** The relayer defaults to `MAX_TOPUPS_PER_IP_PER_HR=5`; a harness starting 20 wallets from one IP throttles itself and consumes quota real testers need.
 

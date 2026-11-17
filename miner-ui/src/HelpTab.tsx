@@ -38,7 +38,7 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "What is the bond?",
-    a: "A one-time anti-Sybil deposit — about 0.001 SOL of account rent — locked the first time a wallet mines. It deters spam and is recoverable later. In gasless mode, the relayer even pays it for you.",
+    a: "A one-time anti-Sybil deposit — about 0.001 SOL of account rent — locked the first time a wallet mines. It deters spam. In gasless mode, the relayer even pays it for you. A wallet can withdraw its bond an hour after its last claim, and the deposit goes back to whoever paid it. This site has no button for that.",
   },
   {
     q: "Why do some claims flash big? What are 🎰 ⭐ ✨?",

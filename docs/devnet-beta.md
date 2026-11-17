@@ -37,7 +37,7 @@ The harness refuses to run against mainnet-beta (genesis-hash check), the same g
 
 What they are sent is [`beta-testing.md`](beta-testing.md): how to start, what to try, and a list of behavior that looks like a bug and is not. Reports come in through the GitHub issue form (`.github/ISSUE_TEMPLATE/bug_report.yml`), whose severity question follows the rubric below. Recruitment drafts are in [`beta-recruitment-post.md`](beta-recruitment-post.md).
 
-**Testers cannot withdraw a bond, or use the TERM bond.** The site has no control for `withdraw_bond`, `deposit_bond_term` or `withdraw_bond_term`; the exit flow was descoped (`MAINNET_CHECKLIST.md` §7). So the withdraw half of §6's fourth criterion cannot come from testers as things stand. Either the site gains a withdrawal control, or the team exercises withdrawal of both bond kinds on devnet with a script and the criterion is narrowed to match. Two facts for whoever does it: withdrawal is blocked for `BOND_WITHDRAW_COOLDOWN` (3,600s) after the wallet's last claim, and the rent goes back to whoever paid it, which is the relayer for a wallet that started gasless.
+**Testers cannot withdraw a bond, or use the TERM bond.** The site has no control for `withdraw_bond`, `deposit_bond_term` or `withdraw_bond_term`; the exit flow was descoped (`MAINNET_CHECKLIST.md` §7). So §6 asks testers for the deposit only, and withdrawal of both kinds is exercised by script (decided 2026-11-17): see [Bond withdrawal check](#bond-withdrawal-check).
 
 **The default path leaves a tester with no SOL, which blocks two things.** A burner that mines through the relayer never holds SOL. Withdrawing TERM needs a little in the wallet, and the site says so. A wallet's first stake does too, about 0.0015 SOL, because `stake` creates the stake account with `payer = authority`; the site does not say so, and the stake fails at the relayer's simulation. The guide gives the workaround (`[ SELF-FUND ]`, then `[ TOP UP BURNER ]`). Expect reports about it anyway.
 
@@ -49,7 +49,7 @@ Every §6 criterion maps to an event the program already emits, so the checkboxe
 |---|---|
 | 30 days of operation with multiple miners | `ClaimMined` — distinct `miner` pubkeys per day, uptime calendar |
 | Difficulty adjustment under varying load | `DifficultyAdjusted` — `old`/`new`/`claims_in_window`/`window_seconds` across the ramp |
-| Bond deposit/withdrawal exercised by external testers | `BondDeposited` — distinct pubkeys. `BondWithdrawn`, and deposits of the TERM kind, can only come from the team until the site offers them (see Track B) |
+| Bond flows exercised: deposit by external testers, withdrawal of both kinds by script | `BondDeposited` from distinct pubkeys outside the team. `BondWithdrawn` of each kind from `scripts/devnet_bond_check.ts`, which checks the event and the balances and prints both signatures |
 | No critical bugs reported | Issue tracker plus a written triage rubric (below) |
 
 `devnet_load.ts` writes JSONL (`claim_ok`; `claim_fail` with the program error code and a kind of `stale`, `ratelimit`, `error` or `terminal`; `difficulty`; `phase_start/end` with the target and achieved rate) so a run replays into the table above without a separate indexer. A terminal error (program paused, or supply cap reached) stops the run.
@@ -71,9 +71,35 @@ The harness mines on one CPU core (about 125k hashes/s on the machine it was tes
 
 Run the ramp at least twice on different days. One run is an anecdote; two that agree are evidence.
 
+## Bond withdrawal check
+
+`scripts/devnet_bond_check.ts` supplies the withdrawal half of §6's bond criterion, for both kinds of bond, because testers cannot (Track B).
+
+A bond can be withdrawn once `BOND_WITHDRAW_COOLDOWN` (3,600s) has passed since the wallet's last claim. The integration suite cannot show that. Its local validator cannot wait an hour, so it withdraws only bonds that never claimed, whose `last_claim_time` of 0 passes the time check trivially, and shows the refusal while a cooldown is active. The script runs the case a real miner hits: claim, wait the hour, withdraw.
+
+What it does:
+
+1. Creates two throwaway wallets and funds them from the deployer.
+2. The first deposits a SOL bond, paying its own rent as a self-funded miner does, and mines until it holds 20 TERM.
+3. The second is sent those 20 TERM and deposits them as a TERM bond, with the deployer paying the account rent as the relayer does for a gasless wallet. It then claims once.
+4. Confirms by simulation that a withdrawal is refused with `BondLocked` right after each wallet's last claim, and again shortly before the hour is up.
+5. Once the chain's clock says the hour has passed, withdraws both bonds and checks each transaction: the rent went back to whoever paid it, the 20 TERM went back to the miner, `BondWithdrawn` was emitted, the bond account is gone, and a second withdrawal is refused.
+
+A check that fails stops the run with a message that starts `FINDING`. By the rubric below, a bond that can be withdrawn early, or cannot be withdrawn after the hour, is a High.
+
+```bash
+RPC_URL=https://api.devnet.solana.com \
+DEPLOYER=~/.config/solana/devnet-wallet.json \
+  npx ts-node -P tsconfig.json scripts/devnet_bond_check.ts
+```
+
+It takes a little over an hour, nearly all of it waiting, and about 0.007 SOL. Progress is saved after every step to `scripts/.devnet-bond-check.json`, which is gitignored because it holds the two wallets' secret keys, so a run that is interrupted carries on when started again. It can run while the load harness does: a claim that loses a race to the harness is mined again.
+
+The evidence has to be for the build that ships, which devnet has carried since 2026-11-17. The script prints the slot the program was last deployed in and, when `target/deploy/terminuscoin.so` is present, whether the deployed program is identical to it. At the end it prints one line to record under §6: the date, the two withdrawal signatures and the deploy slot.
+
 ## Operating rules
 
-**Treat `programs/terminuscoin/src/lib.rs` and `Cargo.lock` as frozen at `audit-scope-v2`.** The audit is deferred to the liquidity gate, but it will cover the tagged commit — so deploy that build, and keep what is live and what gets audited the same thing. A program bug found in the beta should be fixed before deploy; when one is, re-cut the scope tag (`audit-scope-v3`) so the eventual audit targets the deployed code. The lockfile is frozen with it because a dependency bump changes the binary too: that is what separated v1 from `main` and forced the re-cut. Frontend and relayer fixes are out of audit scope and can ship any time. As of 2026-11-16 devnet runs an earlier build, commit `3b10270`, which behaves the same but is not the tag's bytes; upgrading it is a §6 item in the checklist.
+**Treat `programs/terminuscoin/src/lib.rs` and `Cargo.lock` as frozen at `audit-scope-v2`.** The audit is deferred to the liquidity gate, but it will cover the tagged commit — so deploy that build, and keep what is live and what gets audited the same thing. A program bug found in the beta should be fixed before deploy; when one is, re-cut the scope tag (`audit-scope-v3`) so the eventual audit targets the deployed code. The lockfile is frozen with it because a dependency bump changes the binary too: that is what separated v1 from `main` and forced the re-cut. Frontend and relayer fixes are out of audit scope and can ship any time. Devnet has carried the tag's build since 2026-11-17 03:39 UTC. Before that it ran commit `3b10270`, which behaved the same but was not the tag's bytes.
 
 **Fund synthetic wallets from the deployer, not `/api/topup`.** The relayer defaults to `MAX_TOPUPS_PER_IP_PER_HR=5`; a harness starting 20 wallets from one IP throttles itself and consumes quota real testers need.
 

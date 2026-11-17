@@ -41,6 +41,10 @@ miner-ui/dist/
 scripts/.devnet-load-wallets.json
 devnet-load.jsonl
 
+# Bond withdrawal check (scripts/devnet_bond_check.ts). Its run state holds the
+# RAW SECRET KEYS of two throwaway devnet wallets — never commit it.
+scripts/.devnet-bond-check.json
+
 # macOS
 .DS_Store
 

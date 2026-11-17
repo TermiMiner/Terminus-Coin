@@ -39,6 +39,8 @@ Each of these signs with, or reads, a key that exists only on this box. It will 
 | Initialize program | `scripts/initialize_program.ts` | program authority wallet |
 | Initialize vesting | `npm run vesting` | authority wallet |
 | Set rate limit | `npm run rate-limit` | authority wallet |
+| Devnet load harness | `scripts/devnet_load.ts` | devnet wallet (funds the synthetic miners) |
+| Bond withdrawal check | `scripts/devnet_bond_check.ts` | devnet wallet (funds two throwaway wallets) |
 | Create token metadata | `npm run metadata` | mint authority |
 | Team vest claim | `npm run team-claim` (`scripts/claim_team_vest.ts`) | `team-wallet.json` |
 | Run the shared relayer | see `RELAYER_OPERATOR.md` | `term-shared-relayer.json` / Vercel env key |

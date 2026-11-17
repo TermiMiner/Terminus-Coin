@@ -123,7 +123,7 @@ The relayer spends its own devnet SOL on your behalf, so it rations it: one top-
 
 ## Not on the site
 
-- **Getting the bond back.** The program lets a wallet withdraw its bond an hour after its last claim, but the site has no button for it. The help text calls the bond "recoverable later", and that is true of the program, not yet of the site.
+- **Getting the bond back.** The program lets a wallet withdraw its bond an hour after its last claim, and the deposit goes back to whoever paid it: the relayer, if you started without SOL. The site has no button for it.
 - **The TERM bond.** The program also accepts a bond of 20 TERM in place of SOL. The site always uses the SOL bond.
 - **Full transaction signatures.** The log shows only the first 16 characters. To get the whole signature, search your wallet address at <https://explorer.solana.com/?cluster=devnet> and copy it from the transaction history.
 

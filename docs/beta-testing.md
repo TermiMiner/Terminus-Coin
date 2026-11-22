@@ -105,7 +105,7 @@ We still want the detail. A wallet that cannot connect at all, a prompt that sho
 A burner that mines through the relayer holds no SOL. Mining works without it, but two things do not:
 
 - **Withdrawing TERM.** The page tells you how much SOL is needed, for example `Need ~0.0029 SOL …`.
-- **Your first stake.** It opens a small account that your own wallet pays for, about 0.0015 SOL. Without that, the stake fails with a `Failed: …` message.
+- **Your first stake.** It opens a small account that your own wallet pays for, so the wallet needs about 0.0024 SOL: 0.0015 SOL of rent, plus the minimum every wallet has to keep. The `STAKE` tab says so before you stake (`Your first stake opens a stake account…`), and offers `[ TOP UP BURNER ]` when a relayer can top up your burner.
 
 To give a burner SOL, choose `[ SELF-FUND ]` under `ROUTING` and press `[ TOP UP BURNER ]`, or send it devnet SOL from <https://faucet.solana.com>. Once a burner holds enough SOL, `AUTO` pays fees from it and stops using the relayer.
 
@@ -123,7 +123,7 @@ The relayer spends its own devnet SOL on your behalf, so it rations it: one top-
 
 ## Not on the site
 
-- **Getting the bond back.** The program lets a wallet withdraw its bond an hour after its last claim, but the site has no button for it. The help text calls the bond "recoverable later", and that is true of the program, not yet of the site.
+- **Getting the bond back.** The program lets a wallet withdraw its bond an hour after its last claim, and the deposit goes back to whoever paid it: the relayer, if you started without SOL. The site has no button for it.
 - **The TERM bond.** The program also accepts a bond of 20 TERM in place of SOL. The site always uses the SOL bond.
 - **Full transaction signatures.** The log shows only the first 16 characters. To get the whole signature, search your wallet address at <https://explorer.solana.com/?cluster=devnet> and copy it from the transaction history.
 

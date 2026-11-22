@@ -40,6 +40,13 @@ miner-ui/dist/
 # but a committed keypair is a committed keypair.
 scripts/.devnet-load-wallets.json
 devnet-load.jsonl
+# Its schedule state: when each schedule started and what it has spent. No
+# keys, but it belongs to the machine running the harness.
+scripts/.devnet-load-state.json
+
+# Bond withdrawal check (scripts/devnet_bond_check.ts). Its run state holds the
+# RAW SECRET KEYS of two throwaway devnet wallets — never commit it.
+scripts/.devnet-bond-check.json
 
 # macOS
 .DS_Store

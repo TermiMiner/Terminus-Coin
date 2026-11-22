@@ -22,8 +22,9 @@ import {
   type SharedRelayerInfo,
 } from "./relayerAdapter";
 import { useCluster, isPlayMoney, clusterUrlFlag } from "./cluster";
-import { useStaking } from "./useStaking";
-import { executeStakingAction } from "./stakingActions";
+import { useStaking, deriveUserStakePDA } from "./useStaking";
+import { executeStakingAction, firstStakeLamports } from "./stakingActions";
+import { AUDIT_STATUS } from "./auditStatus";
 import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS, FEE_PAYER_RENT_FLOOR_LAMPORTS } from "./sweepTerm";
 import logoUrl from "./assets/logo.jpg";
 
@@ -559,6 +560,18 @@ export default function App() {
   const [stakeBusy, setStakeBusy] = useState<null | "stake" | "unstake" | "claim">(null);
   const [stakeMsg, setStakeMsg] = useState<string | null>(null);
 
+  // A first stake needs SOL in the wallet itself (stakingActions.ts). Shown under
+  // the stake input before the wallet tries, and again if it tries anyway.
+  const firstStakeNeed = firstStakeLamports(!broadcaster);
+  const canTopUpBurner = isBurner && !!burner.publicKey && (topupViaShared || localAvailable);
+  const firstStakeShort = !!activeWallet.publicKey && !staking.loading && !staking.hasStakeAccount
+    && staking.walletBalance > 0n && activeSolBalance !== null && activeSolBalance < firstStakeNeed;
+  function firstStakeMessage(need: number, have: number): string {
+    return "Your first stake opens a stake account, and its rent comes from this wallet even when a relayer pays the fee. " +
+      `That needs about ${(need / 1e9).toFixed(4)} SOL here; this wallet has ${(have / 1e9).toFixed(4)}. ` +
+      (canTopUpBurner ? "Top up the burner, then stake." : "Send this wallet a little SOL, then stake.");
+  }
+
   // ── Sweep (withdraw TERM) state + action ──
   const [sweepDest, setSweepDest] = useState("");
   const [sweepAmount, setSweepAmount] = useState("");
@@ -630,6 +643,19 @@ export default function App() {
     }
     setStakeBusy(action); setStakeMsg(null);
     try {
+      // Check before sending: a relayer would only report a failed simulation.
+      // Fresh reads, as in runSweep, because the polled values can be stale.
+      if (action === "stake") {
+        const pk = activeWallet.publicKey;
+        const [stakeAccount, sol] = await Promise.all([
+          connection.getAccountInfo(deriveUserStakePDA(pk)),
+          connection.getBalance(pk),
+        ]);
+        if (!stakeAccount && sol < firstStakeNeed) {
+          setStakeMsg(firstStakeMessage(firstStakeNeed, sol));
+          return;
+        }
+      }
       const res = await executeStakingAction(
         connection,
         activeWallet,
@@ -669,7 +695,10 @@ export default function App() {
         <div className="header-text">
           <div className="header-title">TERMINUS COIN — MINER v{TERM_VERSION}</div>
           <div className="header-subtitle">
-            Proof-of-Work SPL token on Solana &nbsp;|&nbsp; Program: FfA5sr…JH5Y
+            Proof-of-Work SPL token on Solana &nbsp;|&nbsp; Program: FfA5sr…JH5Y &nbsp;|&nbsp;{" "}
+            <button className="unaudited-tag" onClick={() => setTab("help")} title={AUDIT_STATUS.tagTitle}>
+              {AUDIT_STATUS.tag}
+            </button>
           </div>
         </div>
       </div>
@@ -1244,6 +1273,14 @@ export default function App() {
             {stakeBusy === "stake" ? "[ STAKING… ]" : "[ STAKE ]"}
           </button>
         </div>
+        {firstStakeShort && !stakeMsg && (
+          <div className="log-line warn prose">
+            {firstStakeMessage(firstStakeNeed, activeSolBalance ?? 0)}
+            {canTopUpBurner && (
+              <> <button className="btn" onClick={handleTopUpBurner} style={{ marginLeft: 4 }}>[ TOP UP BURNER ]</button></>
+            )}
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             className="stake-input"
@@ -1272,7 +1309,7 @@ export default function App() {
             {stakeBusy === "claim" ? "[ CLAIMING… ]" : `[ CLAIM YIELD${staking.pendingYield > 0n ? ` — ${fmtTerm(staking.pendingYield)} TERM` : ""} ]`}
           </button>
         </div>
-        {stakeMsg && <div className="log-line dim" style={{ paddingTop: 6 }}>{stakeMsg}</div>}
+        {stakeMsg && <div className="log-line dim prose" style={{ paddingTop: 6 }}>{stakeMsg}</div>}
       </div>
 
       {/* Position — collapsible */}

@@ -25,6 +25,24 @@
 // harness can't collide with itself, a stale-nonce failure means someone
 // else's claim landed first.
 //
+// LEFT RUNNING FOR WEEKS. §6 also asks for 30 days of operation, and
+// scripts/devnet_load_soak.json is a 31-day schedule for it. So the harness
+// can be left alone:
+//   • The schedule runs on the clock from its start, which STATE_FILE keeps.
+//     Started again after a crash or a reboot, it picks the schedule up where
+//     the clock now is instead of starting over (--restart-schedule starts it
+//     over).
+//   • Pool wallets are topped up from the funding wallet as they run low,
+//     within FUNDING_BUDGET_SOL for the whole schedule, and never so far that
+//     the funding wallet is left with less than FUNDING_FLOOR_SOL.
+//   • When claims keep failing for reasons that are not the program's (the RPC
+//     node, a devnet outage), it logs an outage and backs off until claims
+//     land again.
+// It exits 0 when it stops on purpose (the schedule is over, Ctrl-C, the
+// funding limits are reached, mining is paused) and 1 when it crashes. A
+// supervisor that restarts it on failure therefore resumes the schedule after
+// a crash and leaves it stopped after a deliberate stop.
+//
 // See docs/devnet-beta.md for how this fits the wider beta plan.
 //
 // SAFETY: refuses to run against mainnet-beta (genesis-hash check). It spends
@@ -33,16 +51,24 @@
 // Usage:
 //   RPC_URL=https://api.devnet.solana.com \
 //   DEPLOYER=~/.config/solana/devnet-wallet.json \
-//     npx ts-node -P tsconfig.json scripts/devnet_load.ts [--phases phases.json]
+//     npx ts-node -P tsconfig.json scripts/devnet_load.ts [--phases phases.json] [--restart-schedule]
+//
+// DEPLOYER is the wallet that funds the pool. It needs no authority over the
+// program, so a long run can have a wallet of its own holding only devnet SOL.
 //
 // A phases file is a JSON array shaped like DEFAULT_PHASES:
 //   [{ "label": "ramp-up", "claimsPerMin": 20, "minutes": 60 }, ...]
 //
 // Optional env:
-//   WALLET_FILE   pool state (default scripts/.devnet-load-wallets.json)
-//   LOG_FILE      JSONL event log (default devnet-load.jsonl)
-//   MAX_WALLETS   size of the pool to create/fund (default: enough for the
-//                 fastest phase under the on-chain per-wallet rate limit)
+//   WALLET_FILE         pool state (default scripts/.devnet-load-wallets.json)
+//   STATE_FILE          when each schedule started and what it has spent
+//                       (default scripts/.devnet-load-state.json)
+//   LOG_FILE            JSONL event log (default devnet-load.jsonl)
+//   MAX_WALLETS         size of the pool to create/fund (default: enough for the
+//                       fastest phase under the on-chain per-wallet rate limit)
+//   FUNDING_BUDGET_SOL  most SOL moved from DEPLOYER to the pool in one
+//                       schedule, setup and top-ups together (default 1.5)
+//   FUNDING_FLOOR_SOL   least SOL DEPLOYER is left with (default 0.5)
 
 import {
   AnchorProvider, BN, Program, Wallet, type Idl,
@@ -56,6 +82,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { keccak_256 } from "@noble/hashes/sha3";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -71,8 +98,25 @@ const MAX_U64 = (1n << 64n) - 1n;
 const RATE_LIMIT_MARGIN_MS = 5_000; // on-chain unix_timestamp can lag the local clock
 const POOL_SPARE = 2;               // wallets beyond the minimum the rate limit needs
 const FAIL_BACKOFF_MS = 15_000;     // rest a wallet after an unclassified failure (RPC error, out of SOL, …)
-const SETUP_LAMPORTS = 12_000_000;  // ~0.012 SOL: ATA + bond + user_state rent, plus fees for a long run
+const SETUP_LAMPORTS = 12_000_000;  // ~0.012 SOL: ATA + bond + user_state rent, plus fees to start on
 const MINE_YIELD_EVERY = 20_000;    // hand the event loop back so signals and RPC stay responsive
+
+// Top-ups. A fee payer has to keep the rent-exempt minimum for an empty
+// account (890,880 lamports), so a wallet below TOPUP_BELOW has about 220
+// claims' fees left. Balances are checked every BALANCE_CHECK_EVERY claims and
+// after any failure, well inside that margin.
+const TOPUP_BELOW = 2_000_000;      // ~0.002 SOL
+const TOPUP_TO = 10_000_000;        // ~0.01 SOL, about 1,800 claims' fees
+const BALANCE_CHECK_EVERY = 20;
+const FEE_LAMPORTS = 5_000;         // one signature, no priority fee
+
+// Outages: this many unclassified failures in a row (RPC errors, devnet down)
+// count as one. The harness then pauses after each further failure, doubling
+// from OUTAGE_PAUSE_MS up to OUTAGE_MAX_PAUSE_MS, until a claim gets an answer.
+// The cap bounds how long after devnet comes back the harness notices.
+const OUTAGE_AFTER = 8;
+const OUTAGE_PAUSE_MS = 15_000;
+const OUTAGE_MAX_PAUSE_MS = 120_000;
 
 // Program error codes, taken from the IDL rather than hard-coded (Anchor
 // numbers custom errors from 6000 in declaration order).
@@ -84,8 +128,9 @@ function errorCode(name: string): number {
 }
 const INVALID_POW = errorCode("InvalidProofOfWork"); // stale: last_hash or difficulty moved first
 const RATE_LIMITED = errorCode("RateLimitExceeded");
+const PAUSED = errorCode("ContractPaused");
 // Not retryable: mining is paused, or the supply cap is reached and mining is over.
-const TERMINAL = new Set([errorCode("ContractPaused"), errorCode("SupplyCapReached")]);
+const TERMINAL = new Set([PAUSED, errorCode("SupplyCapReached")]);
 
 /** One phase of the load profile: send `claimsPerMin` claims a minute for `minutes`. */
 type Phase = { claimsPerMin: number; minutes: number; label?: string };
@@ -99,6 +144,18 @@ const DEFAULT_PHASES: Phase[] = [
   { label: "drop",     claimsPerMin: 2,  minutes: 60 }, // 0.2× — halves every 10 min
   { label: "recover",  claimsPerMin: 15, minutes: 60 }, // 1.5× — ×1.5 every ~7 min
 ];
+
+/**
+ * One run of a phase schedule, kept in STATE_FILE under the schedule's hash so
+ * that a restart resumes it, and so that running a different schedule in
+ * between does not lose its place.
+ */
+type Schedule = {
+  startedAt: string;       // the phases run on the clock from here
+  fundedLamports: number;  // moved from DEPLOYER to the pool during this schedule
+  fundingTransfers: number;
+};
+type HarnessState = { schedules: Record<string, Schedule> };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -125,6 +182,25 @@ function loadPhases(): Phase[] {
     }
   }
   return phases;
+}
+
+/** An amount of SOL from the environment, in lamports. */
+function solFromEnv(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  const value = raw === "" ? fallback : Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be an amount of SOL, 0 or more (got ${JSON.stringify(raw)}).`);
+  }
+  return Math.round(value * 1e9);
+}
+
+const sol = (lamports: number) =>
+  (lamports / 1e9).toLocaleString("en-US", { maximumFractionDigits: 4 });
+
+function duration(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), min = m % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${min}m` : `${min}m`;
 }
 
 /** Something loggable for anything thrown, including values that aren't Errors. */
@@ -191,6 +267,8 @@ async function main() {
   const deployerFile = (process.env.DEPLOYER ?? "").trim();
   if (!rpc) throw new Error("RPC_URL is not set.");
   if (!deployerFile) throw new Error("DEPLOYER (path to funding keypair) is not set.");
+  const budgetLamports = solFromEnv("FUNDING_BUDGET_SOL", 1.5);
+  const floorLamports = solFromEnv("FUNDING_FLOOR_SOL", 0.5);
 
   const conn = new Connection(rpc, "confirmed");
 
@@ -229,13 +307,98 @@ async function main() {
   const poolNeeded = Math.ceil((maxRate * walletGapMs) / 60_000) + POOL_SPARE;
   const poolSize = Number(process.env.MAX_WALLETS ?? 0) || poolNeeded;
   const walletFile = expand(process.env.WALLET_FILE ?? path.join(__dirname, ".devnet-load-wallets.json"));
+  const stateFile = expand(process.env.STATE_FILE ?? path.join(__dirname, ".devnet-load-state.json"));
+
+  // ── Schedule (persisted) ────────────────────────────────────────────────────
+  // The phases run on the clock from the schedule's start. Started again before
+  // the schedule is over, the harness resumes it in the phase the clock is in.
+  const phasesKey = crypto.createHash("sha256")
+    .update(JSON.stringify(phases.map((p) => [p.label ?? "", p.claimsPerMin, p.minutes])))
+    .digest("hex");
+  const totalMs = phases.reduce((t, p) => t + p.minutes * 60_000, 0);
+  const state: HarnessState = fs.existsSync(stateFile)
+    ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
+    : { schedules: {} };
+  state.schedules ??= {};
+  const prior = state.schedules[phasesKey];
+  const resumed = !process.argv.includes("--restart-schedule")
+    && !!prior && Date.parse(prior.startedAt) + totalMs > Date.now();
+  const sched: Schedule = resumed
+    ? prior
+    : { startedAt: new Date().toISOString(), fundedLamports: 0, fundingTransfers: 0 };
+  state.schedules[phasesKey] = sched;
+  const saveState = () => fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
+  saveState();
+  const scheduleStart = Date.parse(sched.startedAt);
 
   console.log(`Program         : ${program.programId.toBase58()}`);
-  console.log(`Funding wallet  : ${deployer.publicKey.toBase58()}`);
+  console.log(`Funding wallet  : ${deployer.publicKey.toBase58()} (${sol(await conn.getBalance(deployer.publicKey))} SOL)`);
+  console.log(`Funding limits  : ${sol(budgetLamports)} SOL for this schedule, ${sol(sched.fundedLamports)} used so far; ` +
+    `the funding wallet keeps at least ${sol(floorLamports)} SOL`);
   console.log(`Rate limit      : ${rateLimitSecs}s per wallet`);
   console.log(`Pool size       : ${poolSize}${poolSize < poolNeeded ? ` (below the ${poolNeeded} the fastest phase needs — it will fall short)` : ""}`);
   console.log(`Event log       : ${logFile}`);
-  console.log(`Phases          : ${phases.map((p) => `${p.label ?? "?"}(${p.claimsPerMin}/min × ${p.minutes}m)`).join(" → ")}`);
+  console.log(`Phases          : ${phases.map((p) => `${p.label ?? "?"}(${p.claimsPerMin}/min × ${duration(p.minutes * 60_000)})`).join(" → ")}`);
+  console.log(`Schedule        : ${resumed ? `resuming the one started ${sched.startedAt}, ${duration(Date.now() - scheduleStart)} in` : "starting now"}; ` +
+    `${duration(totalMs)} in all, ending ${new Date(scheduleStart + totalMs).toISOString()}`);
+  emit({
+    event: resumed ? "schedule_resume" : "schedule_start", startedAt: sched.startedAt,
+    phases: phasesKey, totalMinutes: totalMs / 60_000,
+  });
+
+  // ── Stopping ────────────────────────────────────────────────────────────────
+  // Every deliberate stop goes through stop(): the reason is printed and logged
+  // at the end, and the process exits 0.
+  let stopping = false;
+  let stopReason = "";
+  const stop = (reason: string) => {
+    if (!stopping) { stopping = true; stopReason = reason; }
+  };
+  let signals = 0;
+  const onSignal = (name: string) => {
+    if (++signals > 1) process.exit(130);
+    console.log(`\n${name}: stopping after the in-flight claim… (again to quit at once)`);
+    stop(`Stopped by ${name}. Start it again to resume the schedule.`);
+  };
+  process.on("SIGINT", () => onSignal("SIGINT"));
+  process.on("SIGTERM", () => onSignal("SIGTERM"));
+
+  /**
+   * Move SOL from the funding wallet to a pool wallet. Refuses, and stops the
+   * run, rather than take this schedule past FUNDING_BUDGET_SOL or leave the
+   * funding wallet below FUNDING_FLOOR_SOL.
+   */
+  async function fund(to: PublicKey, lamports: number, why: "setup" | "topup"): Promise<boolean> {
+    const funderBalance = await conn.getBalance(deployer.publicKey);
+    let refusal = "";
+    if (sched.fundedLamports + lamports > budgetLamports) {
+      refusal = `the funding budget is used up. This schedule has moved ${sol(sched.fundedLamports)} SOL to the pool, ` +
+        `FUNDING_BUDGET_SOL is ${sol(budgetLamports)}, and a ${why} needs ${sol(lamports)} more. ` +
+        "Raise FUNDING_BUDGET_SOL and start it again to carry on.";
+    } else if (funderBalance - lamports - FEE_LAMPORTS < floorLamports) {
+      refusal = `the funding wallet holds ${sol(funderBalance)} SOL, and a ${why} of ${sol(lamports)} would take it ` +
+        `below FUNDING_FLOOR_SOL (${sol(floorLamports)}). Add SOL to ${deployer.publicKey.toBase58()} and start it again to carry on.`;
+    }
+    if (refusal) {
+      emit({
+        event: "funding_stop", why, wallet: to.toBase58(), lamports,
+        fundedLamports: sched.fundedLamports, funderBalance, reason: refusal,
+      });
+      stop(`Stopped: ${refusal}`);
+      return false;
+    }
+    // Counted before it is sent, so a transfer whose outcome is unknown still
+    // counts against the budget.
+    sched.fundedLamports += lamports;
+    sched.fundingTransfers += 1;
+    saveState();
+    const tx = new Transaction().add(SystemProgram.transfer({
+      fromPubkey: deployer.publicKey, toPubkey: to, lamports,
+    }));
+    const sig = await sendAndConfirmTransaction(conn, tx, [deployer], { commitment: "confirmed" });
+    emit({ event: "fund", why, wallet: to.toBase58(), lamports, sig, fundedLamports: sched.fundedLamports });
+    return true;
+  }
 
   // ── Wallet pool (persisted) ─────────────────────────────────────────────────
   // Reused across runs on purpose: each wallet's bond, ATA and user_state are
@@ -251,12 +414,7 @@ async function main() {
   // ── Fund + set up each wallet (idempotent) ──────────────────────────────────
   for (const [i, kp] of miners.entries()) {
     const bal = await conn.getBalance(kp.publicKey);
-    if (bal < SETUP_LAMPORTS / 2) {
-      const tx = new Transaction().add(SystemProgram.transfer({
-        fromPubkey: deployer.publicKey, toPubkey: kp.publicKey, lamports: SETUP_LAMPORTS,
-      }));
-      await sendAndConfirmTransaction(conn, tx, [deployer], { commitment: "confirmed" });
-    }
+    if (bal < SETUP_LAMPORTS / 2 && !(await fund(kp.publicKey, SETUP_LAMPORTS, "setup"))) break;
 
     const ata = getAssociatedTokenAddressSync(mintPDA, kp.publicKey);
     const [bondPDA] = PublicKey.findProgramAddressSync(
@@ -285,9 +443,6 @@ async function main() {
   console.log("\n");
 
   // ── Mining loop ─────────────────────────────────────────────────────────────
-  let stopping = false;
-  process.on("SIGINT", () => { console.log("\nStopping after the in-flight claim…"); stopping = true; });
-
   const sleepUntil = async (t: number) => {
     while (!stopping && Date.now() < t) {
       await new Promise((r) => setTimeout(r, Math.min(1_000, t - Date.now())));
@@ -297,6 +452,8 @@ async function main() {
   // When each wallet may claim next. Starts at 0: a wallet that claimed just
   // before a restart gets one RateLimitExceeded and backs off.
   const nextEligible = new Map<string, number>(miners.map((kp) => [kp.publicKey.toBase58(), 0]));
+  // Claims since each wallet's balance was last checked; absent means check now.
+  const claimsSinceCheck = new Map<string, number>();
   let lastSeenDifficulty = -1n;
   // The last_hash our most recent landed claim consumed. Seeing it again means
   // the RPC node hasn't caught up with that claim yet.
@@ -308,6 +465,17 @@ async function main() {
   async function attemptClaim(kp: Keypair): Promise<Outcome> {
     const key = kp.publicKey.toBase58();
     try {
+      // Top the wallet up before it runs dry.
+      const since = claimsSinceCheck.get(key);
+      if (since === undefined || since >= BALANCE_CHECK_EVERY) {
+        const balance = await conn.getBalance(kp.publicKey);
+        if (balance < TOPUP_BELOW && !(await fund(kp.publicKey, TOPUP_TO - balance, "topup"))) {
+          return "terminal";
+        }
+        claimsSinceCheck.set(key, 0);
+      }
+      claimsSinceCheck.set(key, claimsSinceCheck.get(key)! + 1);
+
       let state = await fetchGlobalState(globalStatePDA);
       for (let i = 0; i < 10 && Buffer.from(state.lastHash).toString("hex") === consumedHash; i++) {
         await new Promise((r) => setTimeout(r, 400));
@@ -357,7 +525,14 @@ async function main() {
         : code !== undefined && TERMINAL.has(code) ? "terminal"
         : "error";
       if (kind === "ratelimit") nextEligible.set(key, Date.now() + walletGapMs);
-      else if (kind === "error") nextEligible.set(key, Date.now() + FAIL_BACKOFF_MS);
+      else if (kind === "error") {
+        nextEligible.set(key, Date.now() + FAIL_BACKOFF_MS);
+        claimsSinceCheck.delete(key); // it may have run out of SOL: check before its next claim
+      } else if (kind === "terminal") {
+        stop(code === PAUSED
+          ? "Stopped: mining is paused on-chain (set_paused). Unpause it, then start the harness again to resume the schedule."
+          : "Stopped: the supply cap is reached, so mining is over.");
+      }
       emit({
         event: "claim_fail", wallet: key, kind, code: code ?? null,
         error: (code !== undefined && errorNames.get(code)) || describeError(err).slice(0, 200),
@@ -377,13 +552,33 @@ async function main() {
     return { kp, readyAt };
   }
 
+  // Outage tracking: unclassified failures since a claim last got an answer
+  // from the program (landed, stale or rate-limited all count as answers).
+  let failuresInARow = 0;
+  let outageSince = 0;
+
+  // Phases run back to back on the clock from the schedule's start. On a
+  // resumed schedule, phases already over are skipped and the current one is
+  // joined part way through.
+  let phaseStart = scheduleStart;
+  let firstPhaseHere = true;
   for (const phase of phases) {
+    const until = phaseStart + phase.minutes * 60_000;
+    const scheduledStart = phaseStart;
+    phaseStart = until;
     if (stopping) break;
+    if (until <= Date.now()) continue;
+    const joined = resumed && firstPhaseHere;
+    firstPhaseHere = false;
+
     const intervalMs = 60_000 / phase.claimsPerMin;
     const start = Date.now();
-    const until = start + phase.minutes * 60_000;
-    console.log(`\n── phase ${phase.label ?? ""}: ${phase.claimsPerMin} claims/min for ${phase.minutes}m ──`);
-    emit({ event: "phase_start", label: phase.label, claimsPerMin: phase.claimsPerMin, minutes: phase.minutes });
+    console.log(`\n── phase ${phase.label ?? ""}: ${phase.claimsPerMin} claims/min for ${duration(until - start)}` +
+      `${joined ? ` (resumed; the phase began ${new Date(scheduledStart).toISOString()})` : ""} ──`);
+    emit({
+      event: "phase_start", label: phase.label, claimsPerMin: phase.claimsPerMin, minutes: phase.minutes,
+      until: new Date(until).toISOString(), resumed: joined,
+    });
 
     const tally: Record<Outcome, number> = { ok: 0, stale: 0, ratelimit: 0, error: 0, terminal: 0 };
     let slotAt = start;
@@ -398,12 +593,31 @@ async function main() {
 
       const outcome = await attemptClaim(kp);
       tally[outcome]++;
-      // Nothing more mining can fix — stop rather than spin against a paused
-      // or exhausted program.
-      if (outcome === "terminal") {
-        console.log("\n  terminal program error — stopping. See the log.");
-        stopping = true;
+
+      // A run of failures the program didn't cause is the RPC node or devnet
+      // itself. Log when it starts and ends (docs/devnet-beta.md: record
+      // devnet's own outages), and back off instead of hammering it.
+      if (outcome === "error") {
+        failuresInARow++;
+        if (failuresInARow === OUTAGE_AFTER) {
+          outageSince = Date.now();
+          emit({ event: "outage_start", failures: failuresInARow });
+          console.log(`\n  ${failuresInARow} failures in a row: treating it as an outage and backing off`);
+        }
+        if (failuresInARow >= OUTAGE_AFTER) {
+          const pause = Math.min(OUTAGE_MAX_PAUSE_MS,
+            OUTAGE_PAUSE_MS * 2 ** Math.min(10, failuresInARow - OUTAGE_AFTER));
+          await sleepUntil(Math.min(Date.now() + pause, until));
+        }
+      } else if (outcome !== "terminal") {
+        if (outageSince) {
+          emit({ event: "outage_end", seconds: Math.round((Date.now() - outageSince) / 1000), failures: failuresInARow });
+          console.log(`\n  outage over after ${duration(Date.now() - outageSince)}`);
+          outageSince = 0;
+        }
+        failuresInARow = 0;
       }
+
       // A claim that overran its slot pushes the schedule back rather than
       // being followed by a burst to catch up.
       slotAt = Math.max(slotAt + intervalMs, Date.now());
@@ -420,13 +634,20 @@ async function main() {
     console.log("");
   }
 
-  emit({ event: "run_end" });
-  log.end();
-  console.log("\nDone. Event log:", logFile);
+  if (!stopping) {
+    stop("The schedule is over.");
+    emit({ event: "schedule_end", startedAt: sched.startedAt, fundedLamports: sched.fundedLamports });
+  }
+  emit({ event: "run_end", reason: stopReason });
+  await new Promise<void>((r) => log.end(() => r()));
+  console.log(`\n${stopReason}\nEvent log: ${logFile}`);
 }
 
-main().catch((err) => {
-  console.error("Error:", err?.message ?? err);
-  if (err?.logs) console.error(err.logs.join("\n"));
-  process.exit(1);
-});
+main().then(
+  () => process.exit(0),
+  (err) => {
+    console.error("Error:", err?.message ?? err);
+    if (err?.logs) console.error(err.logs.join("\n"));
+    process.exit(1);
+  },
+);

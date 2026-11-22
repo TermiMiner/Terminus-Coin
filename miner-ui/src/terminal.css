@@ -394,6 +394,13 @@ body,
   word-break: break-all;
 }
 
+/* Sentences, not signatures: wrap between words, and break a long token only
+   where it would overflow. */
+.log-line.prose {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
 .log-line.info {
   color: var(--green);
 }
@@ -422,6 +429,18 @@ body,
   text-align: center;
   border-top: 1px solid var(--border);
   padding-top: 6px;
+}
+
+/* The UNAUDITED tag in the header: text, not a box; pressing it opens HELP. */
+.unaudited-tag {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--amber);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
 
 /* ── Phantom modal overrides ───────────────────────────────────── */

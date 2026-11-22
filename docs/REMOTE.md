@@ -22,6 +22,7 @@ These touch only source, config, and docs — no signing keys required.
 | Docs & markdown | `README.md`, `MAINNET_CHECKLIST.md`, `RELAYER_OPERATOR.md`, everything in `docs/`. |
 | Lint / format | `npm run lint`, `npm run lint:fix`. |
 | IDL sync | `npm run sync-idl` (pure file copy). |
+| Devnet status | `scripts/devnet_status.ts` — reads the chain only; signs nothing and needs no key. |
 | Review, plan, open PRs | The normal remote workflow — branch + PR you approve from your phone. |
 
 **Anchor tests** (`npm test`) need a local `solana-test-validator` **and** the `ANCHOR_WALLET` at `~/.config/solana/devnet-wallet.json`. They can run remotely *only* against a throwaway keypair generated inside the sandbox — never the real devnet wallet. Simplest to just run them locally.
@@ -39,7 +40,7 @@ Each of these signs with, or reads, a key that exists only on this box. It will 
 | Initialize program | `scripts/initialize_program.ts` | program authority wallet |
 | Initialize vesting | `npm run vesting` | authority wallet |
 | Set rate limit | `npm run rate-limit` | authority wallet |
-| Devnet load harness | `scripts/devnet_load.ts` | devnet wallet (funds the synthetic miners) |
+| Devnet load harness | `scripts/devnet_load.ts` | a devnet funding wallet (it needs no authority over the program) |
 | Bond withdrawal check | `scripts/devnet_bond_check.ts` | devnet wallet (funds two throwaway wallets) |
 | Create token metadata | `npm run metadata` | mint authority |
 | Team vest claim | `npm run team-claim` (`scripts/claim_team_vest.ts`) | `team-wallet.json` |

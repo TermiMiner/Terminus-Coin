@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { BrowserKeypairWallet } from "./burnerWallet";
+import { AUDIT_STATUS } from "./auditStatus";
 
 // Plain-language FAQ for novices. Q&A is static; the wording mirrors the in-app
 // controls (ROUTE / RELAYERS / CLAIM TIP / bond / lucky-block tiers).
@@ -7,6 +8,10 @@ const FAQ: { q: string; a: string }[] = [
   {
     q: "What is Terminus Coin mining?",
     a: "You solve a tiny proof-of-work puzzle in your browser and claim TERM tokens on Solana. No install, no GPU — it runs right here in the page.",
+  },
+  {
+    q: AUDIT_STATUS.question,
+    a: AUDIT_STATUS.answer,
   },
   {
     q: "How do I start? (the fast way)",
@@ -46,11 +51,11 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "What is staking?",
-    a: "In the STAKE tab you can stake TERM to earn a share of the treasury — 3% of every claim's reward (plus a small fixed fee per claim) is set aside for stakers and split across everyone staking. Your stake stays yours; unstake anytime.",
+    a: "In the STAKE tab you can stake TERM to earn a share of the treasury — 3% of every claim's reward (plus a small fixed fee per claim) is set aside for stakers and split across everyone staking. Your stake stays yours; unstake anytime. Your first stake opens a stake account, and its rent (about 0.0015 SOL) comes from your own wallet even when a relayer pays the fee. The STAKE tab tells you if your wallet is short.",
   },
   {
     q: "Is my TERM safe?",
-    a: "Claimed TERM is minted straight to your wallet's token account on-chain. A relayer can only ever take the tip you set — never your reward or your bond. The one key-safety caveat is the burner: it lives in your browser, so move it to Phantom for anything valuable.",
+    a: `Claimed TERM is minted straight to your wallet's token account on-chain. A relayer can only ever take the tip you set — never your reward or your bond. The key-safety caveat is the burner: it lives in your browser, so move it to Phantom for anything valuable. ${AUDIT_STATUS.safetyNote}`,
   },
 ];
 

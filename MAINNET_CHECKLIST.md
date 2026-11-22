@@ -424,6 +424,7 @@ The burner is a **HOT wallet** (secret key in `localStorage`, readable by any ex
 - [ ] Initial announcement post drafted
 - [ ] **Describe the trust model accurately** — the program is **multisig-gated upgradeable** (upgrades require the Squads 2-of-3 hardware multisig, → DAO later per §1), NOT "immutable" / "non-upgradeable." Publish: "no single party can unilaterally change the code; upgrades require 2-of-3 hardware signers." True immutability would be the `--final` path §1 deliberately rejects — don't imply it.
 - [ ] **Say "unaudited" plainly** until the liquidity gate (§5) closes — landing page, announcement, and the miner UI. Implying an audit that hasn't happened is worse than not auditing. When the audit lands, publish the report and update this wording the same day.
+  - **Miner UI: done 2026-11-22.** An `UNAUDITED` tag in the header opens a HELP entry saying the program has had no external security audit, and "Is my TERM safe?" says so too. The wording lives in `miner-ui/src/auditStatus.ts`, the one place to change when the audit lands. The landing page and the announcement are still to do.
 
 ---
 

@@ -41,7 +41,7 @@ What they are sent is [`beta-testing.md`](beta-testing.md): how to start, what t
 
 **Testers cannot withdraw a bond, or use the TERM bond.** The site has no control for `withdraw_bond`, `deposit_bond_term` or `withdraw_bond_term`; the exit flow was descoped (`MAINNET_CHECKLIST.md` §7). So §6 asks testers for the deposit only, and withdrawal of both kinds is exercised by script (decided 2026-11-17): see [Bond withdrawal check](#bond-withdrawal-check).
 
-**The default path leaves a tester with no SOL, which blocks two things.** A burner that mines through the relayer never holds SOL. Withdrawing TERM needs a little in the wallet, and the site says so. A wallet's first stake does too, about 0.0015 SOL, because `stake` creates the stake account with `payer = authority`; the site does not say so, and the stake fails at the relayer's simulation. The guide gives the workaround (`[ SELF-FUND ]`, then `[ TOP UP BURNER ]`). Expect reports about it anyway.
+**The default path leaves a tester with no SOL, which blocks two things.** A burner that mines through the relayer never holds SOL. Withdrawing TERM needs a little in the wallet, and the site says so. A wallet's first stake does too, because `stake` creates the stake account with `payer = authority`: 0.0015 SOL of rent, plus the minimum the wallet has to keep, 0.0024 SOL in all. Until 2026-11-22 the site did not say so and the stake failed at the relayer's simulation. Now the `STAKE` tab checks before sending, says how much is needed, and offers a burner its top-up.
 
 ### C. Evidence collection
 

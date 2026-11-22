@@ -105,7 +105,7 @@ We still want the detail. A wallet that cannot connect at all, a prompt that sho
 A burner that mines through the relayer holds no SOL. Mining works without it, but two things do not:
 
 - **Withdrawing TERM.** The page tells you how much SOL is needed, for example `Need ~0.0029 SOL …`.
-- **Your first stake.** It opens a small account that your own wallet pays for, about 0.0015 SOL. Without that, the stake fails with a `Failed: …` message.
+- **Your first stake.** It opens a small account that your own wallet pays for, so the wallet needs about 0.0024 SOL: 0.0015 SOL of rent, plus the minimum every wallet has to keep. The `STAKE` tab says so before you stake (`Your first stake opens a stake account…`), and offers `[ TOP UP BURNER ]` when a relayer can top up your burner.
 
 To give a burner SOL, choose `[ SELF-FUND ]` under `ROUTING` and press `[ TOP UP BURNER ]`, or send it devnet SOL from <https://faucet.solana.com>. Once a burner holds enough SOL, `AUTO` pays fees from it and stops using the relayer.
 

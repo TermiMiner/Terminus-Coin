@@ -1,0 +1,17 @@
+[
+  {"label": "ramp 1: baseline", "claimsPerMin": 10, "minutes": 60},
+  {"label": "ramp 1: ramp-up", "claimsPerMin": 20, "minutes": 60},
+  {"label": "ramp 1: drop", "claimsPerMin": 2, "minutes": 60},
+  {"label": "ramp 1: recover", "claimsPerMin": 15, "minutes": 60},
+  {"label": "steady", "claimsPerMin": 3, "minutes": 9840},
+  {"label": "ramp 2: baseline", "claimsPerMin": 10, "minutes": 60},
+  {"label": "ramp 2: ramp-up", "claimsPerMin": 20, "minutes": 60},
+  {"label": "ramp 2: drop", "claimsPerMin": 2, "minutes": 60},
+  {"label": "ramp 2: recover", "claimsPerMin": 15, "minutes": 60},
+  {"label": "steady", "claimsPerMin": 3, "minutes": 19920},
+  {"label": "ramp 3: baseline", "claimsPerMin": 10, "minutes": 60},
+  {"label": "ramp 3: ramp-up", "claimsPerMin": 20, "minutes": 60},
+  {"label": "ramp 3: drop", "claimsPerMin": 2, "minutes": 60},
+  {"label": "ramp 3: recover", "claimsPerMin": 15, "minutes": 60},
+  {"label": "steady", "claimsPerMin": 3, "minutes": 14160}
+]

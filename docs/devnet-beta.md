@@ -103,7 +103,9 @@ What makes it safe to leave alone:
 - **It resumes.** The schedule runs on the clock from its start, which `scripts/.devnet-load-state.json` records. Started again before the 31 days are up, the harness carries on in whichever phase the clock is in; `--restart-schedule` starts it over.
 - **It tops up its wallets, within limits.** A pool wallet below 0.002 SOL is topped back up to 0.01 SOL. All funding, a new wallet's first SOL included, counts against `FUNDING_BUDGET_SOL` (default 1.5) for the schedule, and the funding wallet is never taken below `FUNDING_FLOOR_SOL` (default 0.5). When either limit is reached the harness stops and says which.
 - **It rides out outages.** After 8 failures in a row that are not the program's, it logs `outage_start`, waits up to 2 minutes between attempts, and logs `outage_end` once a claim gets an answer again.
-- **Its exit code tells a deliberate stop from a crash.** It exits 0 when the schedule is over, on Ctrl-C or SIGTERM, when a funding limit is reached and when mining is paused, and 1 when it crashes. So restart it on failure only.
+- **Nothing it waits on can hang.** Each RPC request gives up after 30 seconds (Node's own limit is 5 minutes, which a request on a dead connection waits out in full) and each send after 2 minutes. If the run still goes `WATCHDOG_MINUTES` (default 15) without progress, the watchdog logs `watchdog` and exits 2.
+- **It records its own downtime.** When the process didn't run for over a minute, because the host slept or the process was stopped, it logs `clock_gap` with the length. The evidence then tells our downtime apart from devnet's outages.
+- **Its exit code tells a deliberate stop from a crash.** It exits 0 when the schedule is over, on Ctrl-C or SIGTERM, when a funding limit is reached and when mining is paused, 1 when it crashes and 2 when the watchdog stops it. So restart it on failure only.
 
 Give it a funding wallet of its own, `~/.config/solana/devnet-load-funder.json` in the commands here. `DEPLOYER` only funds the pool and needs no authority over the program, so a fresh devnet keypair with 2 SOL (the default budget plus the floor) does the job, and the devnet upgrade authority stays off the machine that runs it:
 
@@ -114,7 +116,7 @@ solana airdrop 2 --url devnet --keypair ~/.config/solana/devnet-load-funder.json
 
 The public faucet rate-limits airdrops; if it refuses, try again later or use <https://faucet.solana.com>.
 
-Run it on something that stays awake for a month, ideally an always-on Linux machine or a small VPS. A laptop stops the run whenever it sleeps, which for most laptops includes closing the lid.
+Run it on something that stays awake for a month, ideally an always-on Linux machine or a small VPS. A laptop stops the run whenever it sleeps, which for most laptops includes closing the lid. That is what happened to the first long run: started on a laptop on 2026-11-07, it ran four minutes before the lid closed. The laptop's journal shows it asleep from then until 11-15, from 11-15 to 11-16 and from 11-16 to 11-22, which is where the gaps in devnet's record over those weeks come from.
 
 - **Linux with systemd:** a user service, `~/.config/systemd/user/devnet-load.service`. `ExecStart` needs the full path to `npx` (`command -v npx`).
   ```ini
@@ -133,7 +135,12 @@ Run it on something that stays awake for a month, ideally an always-on Linux mac
   WantedBy=default.target
   ```
   Then `systemctl --user enable --now devnet-load`, and `loginctl enable-linger` so it keeps running after you log out. `journalctl --user -u devnet-load -f` follows it.
-- **Anywhere else:** inside `tmux` or `screen`, so that it outlives the terminal, with a loop that restarts it after a crash. On a Mac, `caffeinate -is` keeps the machine awake while it is plugged in; leave it out on Linux.
+- **A Linux laptop:** put `systemd-inhibit --what=sleep:handle-lid-switch` in front of the command, which keeps the machine awake, lid shut or not, for as long as the harness runs. In the user service above:
+  ```ini
+  ExecStart=/usr/bin/systemd-inhibit --what=sleep:handle-lid-switch --why=devnet-load /path/to/npx ts-node -P tsconfig.json scripts/devnet_load.ts --phases scripts/devnet_load_soak.json
+  ```
+  Polkit granted the inhibit both from a terminal and from a user service while logged in (checked 2026-11-22 on Ubuntu 24.04). It may refuse a service started before anyone logs in; `systemd-inhibit` then exits with an error, so the service fails rather than running without it.
+- **Anywhere else:** inside `tmux` or `screen`, so that it outlives the terminal, with a loop that restarts it after a crash or a watchdog exit. On a Mac, `caffeinate -is` keeps the machine awake while it is plugged in; on a Linux laptop use `systemd-inhibit --what=sleep:handle-lid-switch` in its place.
   ```bash
   caffeinate -is bash -c 'until RPC_URL=https://api.devnet.solana.com \
     DEPLOYER=~/.config/solana/devnet-load-funder.json \

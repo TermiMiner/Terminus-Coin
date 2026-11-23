@@ -96,7 +96,7 @@ Reading this list first will save you a report.
 
 - **A prompt for every claim.** These wallets ask you to approve each transaction. The burner does not, which is why the site recommends it for mining.
 - **Warnings such as "failed to simulate the results of this request".** The wallet tests each transaction before it signs, and a mining claim stops being valid a few seconds after it is made. Claims also go stale while a prompt waits for you.
-- **`WALLET NEEDS SOL`.** You chose `[ SELF-FUND ]` for a wallet that holds too little SOL. Its first claim needs about 0.004 SOL.
+- **`WALLET NEEDS SOL`.** You chose `[ SELF-FUND ]` for a wallet that holds too little SOL. Its first claim needs about 0.004 SOL. After that a claim needs only its fee, with about 0.0007 SOL left in the wallet.
 
 We still want the detail. A wallet that cannot connect at all, a prompt that shows the wrong network or the wrong amounts, and a claim the page says landed when it did not are all worth a report.
 

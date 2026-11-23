@@ -19,7 +19,10 @@
 // the public keys in scripts/devnet_load_pubkeys.txt, which the repo carries
 // so this works on any machine, plus the wallets in a pool file if there is
 // one here (scripts/.devnet-load-wallets.json, or WALLET_FILE). Only public
-// keys are taken from the pool file.
+// keys are taken from the pool file. The team's other devnet wallets, such as
+// the bond withdrawal check's, are counted apart too: those in
+// scripts/devnet_team_pubkeys.txt, plus the wallets in a bond-check state file
+// here (scripts/.devnet-bond-check.json, or BOND_CHECK_STATE).
 //
 // Usage:
 //   npx ts-node -P tsconfig.json scripts/devnet_status.ts [--days N] [--json]
@@ -32,6 +35,7 @@
 //   RELAYER_URL        relayer to ask for its balance; on devnet the default is
 //                      https://terminus-coin.vercel.app
 //   WALLET_FILE        a load harness wallet pool on this machine (default scripts/.devnet-load-wallets.json)
+//   BOND_CHECK_STATE   a bond-check state file on this machine (default scripts/.devnet-bond-check.json)
 //   STALE_AFTER_HOURS  mining counts as stopped after this long without a claim (default 3)
 //
 // Exit code: 0 while mining runs, 2 once it has stopped, 1 on an error.
@@ -52,6 +56,7 @@ const coder = new BorshAccountsCoder(idl);
 const LAUNCH_SCRIPT = path.join(__dirname, "mainnet-launch.sh");
 const LOCAL_BUILD = path.join(__dirname, "../target/deploy/terminuscoin.so");
 const HARNESS_KEYS = path.join(__dirname, "devnet_load_pubkeys.txt");
+const TEAM_KEYS = path.join(__dirname, "devnet_team_pubkeys.txt");
 
 const CLUSTERS: Record<string, string> = {
   "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d": "mainnet-beta",
@@ -145,6 +150,15 @@ function harnessWallets(file: string): PublicKey[] | null {
   if (!fs.existsSync(file)) return null;
   const secrets = JSON.parse(fs.readFileSync(file, "utf8")) as number[][];
   return secrets.filter((s) => s.length === 64).map((s) => new PublicKey(Uint8Array.from(s.slice(32))));
+}
+
+/** Public keys of the bond check's two wallets, from its state file (scripts/devnet_bond_check.ts). */
+function bondCheckWallets(file: string): PublicKey[] | null {
+  if (!fs.existsSync(file)) return null;
+  const st = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, { secret?: number[] } | undefined>;
+  return [st.sol?.secret, st.term?.secret]
+    .filter((s): s is number[] => Array.isArray(s) && s.length === 64)
+    .map((s) => new PublicKey(Uint8Array.from(s.slice(32))));
 }
 
 /** Public keys listed one per line, as in scripts/devnet_load_pubkeys.txt; "#" starts a comment. */
@@ -247,12 +261,23 @@ async function main(): Promise<number> {
   const poolUserStates = new Set(pool?.map((pk) => pda("user_state", pk).toBase58()));
   const poolBonds = new Set(pool?.map((pk) => pda("bond", pk).toBase58()));
 
+  // ── The team's other wallets: the repo's list, and a bond-check state file here ──
+  const bondCheckFile = expand(process.env.BOND_CHECK_STATE ?? path.join(__dirname, ".devnet-bond-check.json"));
+  const teamListed = listedWallets(TEAM_KEYS);
+  const teamLocal = bondCheckWallets(bondCheckFile);
+  const teamListedKeys = new Set(teamListed?.map((pk) => pk.toBase58()));
+  const teamUnlisted = (teamLocal ?? []).filter((pk) => !teamListedKeys.has(pk.toBase58()));
+  const team = teamListed || teamLocal ? [...(teamListed ?? []), ...teamUnlisted] : null;
+  const teamUserStates = new Set(team?.map((pk) => pda("user_state", pk).toBase58()));
+  const teamBonds = new Set(team?.map((pk) => pda("bond", pk).toBase58()));
+
   // ── Miners: every wallet's user_state holds the time of its last claim ─────
   const userStates = await withRetry(() => conn.getProgramAccounts(PROGRAM_ID, {
     filters: [{ memcmp: { offset: 0, bytes: discriminator("UserState") } }],
   }));
   const lastClaims = userStates.map(({ pubkey, account }) => ({
     harness: poolUserStates.has(pubkey.toBase58()),
+    team: teamUserStates.has(pubkey.toBase58()),
     last: Number(coder.decode("UserState", account.data).last_claim_time),
   }));
   const tally = (rows: typeof lastClaims): Counts => {
@@ -263,7 +288,8 @@ async function main(): Promise<number> {
   const miners = {
     all: tally(lastClaims),
     harness: pool ? tally(lastClaims.filter((r) => r.harness)) : null,
-    others: pool ? tally(lastClaims.filter((r) => !r.harness)) : null,
+    team: team ? tally(lastClaims.filter((r) => r.team && !r.harness)) : null,
+    others: pool || team ? tally(lastClaims.filter((r) => !r.harness && !r.team)) : null,
   };
   const lastClaim = lastClaims.reduce((m, r) => Math.max(m, r.last), 0) || null;
   const stopped = lastClaim === null || now - lastClaim > staleAfterHours * 3600;
@@ -293,6 +319,7 @@ async function main(): Promise<number> {
   const bonds = {
     sol: blank(), term: blank(), oldFormat: 0, neverClaimed: 0,
     harness: pool ? 0 : null as number | null,
+    team: team ? 0 : null as number | null,
     termInVault: 0,
   };
   for (const { pubkey, account } of bondAccounts) {
@@ -305,6 +332,7 @@ async function main(): Promise<number> {
     (Number(b.kind) === 1 ? bonds.term : bonds.sol)[who]++;
     if (Number(b.last_claim_time) === 0) bonds.neverClaimed++;
     if (bonds.harness !== null && poolBonds.has(pubkey.toBase58())) bonds.harness++;
+    else if (bonds.team !== null && teamBonds.has(pubkey.toBase58())) bonds.team++;
   }
   const vault = await withRetry(() => conn.getAccountInfo(pda("bond_term_vault")));
   bonds.termInVault = vault ? Number(vault.data.readBigUInt64LE(64)) / 1e6 : 0;
@@ -318,6 +346,10 @@ async function main(): Promise<number> {
     harnessPool: pool ? {
       wallets: pool.length, listed: listed?.length ?? 0, localFile: local ? walletFile : null,
       unlisted: unlisted.map((pk) => pk.toBase58()),
+    } : null,
+    teamWallets: team ? {
+      wallets: team.length, listed: teamListed?.length ?? 0, localFile: teamLocal ? bondCheckFile : null,
+      unlisted: teamUnlisted.map((pk) => pk.toBase58()),
     } : null,
   };
 
@@ -343,15 +375,19 @@ async function main(): Promise<number> {
   const counts = (label: string, c: Counts) => [label, c["24h"], c["7d"], c["30d"], c.ever];
   out.push(...table(["Miners, by last claim", "24h", "7d", "30d", "ever"], [
     counts("all", miners.all),
-    ...(miners.harness && miners.others
-      ? [counts("load harness", miners.harness), counts("everyone else", miners.others)] : []),
+    ...(miners.harness ? [counts("load harness", miners.harness)] : []),
+    ...(miners.team ? [counts("other team wallets", miners.team)] : []),
+    ...(miners.others ? [counts("everyone else", miners.others)] : []),
   ]));
+  const notListed = (keys: PublicKey[], file: string, list: string) =>
+    `  ${keys.length} wallet${keys.length === 1 ? "" : "s"} in ${file} ${keys.length === 1 ? "is" : "are"} ` +
+    `not in scripts/${list}, so other machines count ${keys.length === 1 ? "it" : "them"} as everyone else. Add ${keys.length === 1 ? "it" : "them"}.`;
   if (!pool) {
     out.push(`  The harness's wallets are not counted apart: neither ${HARNESS_KEYS} nor a pool file (${walletFile}) is here.`);
   } else if (unlisted.length) {
-    out.push(`  ${unlisted.length} wallet${unlisted.length === 1 ? "" : "s"} in ${walletFile} ${unlisted.length === 1 ? "is" : "are"} ` +
-      `not in scripts/devnet_load_pubkeys.txt, so other machines count ${unlisted.length === 1 ? "it" : "them"} as everyone else. Add ${unlisted.length === 1 ? "it" : "them"}.`);
+    out.push(notListed(unlisted, walletFile, "devnet_load_pubkeys.txt"));
   }
+  if (teamUnlisted.length) out.push(notListed(teamUnlisted, bondCheckFile, "devnet_team_pubkeys.txt"));
   out.push("", ...table(["Claims per day (UTC)", "landed", "failed"],
     report.claimsPerDay.map(({ day, landed, failed }) => [day, landed, failed])));
 
@@ -362,7 +398,8 @@ async function main(): Promise<number> {
     ([["the wallet", "wallet"], ["the relayer", "relayer"], ["someone else", "other"]] as const)
       .map(([label, who]) => [label, bonds.sol[who], bonds.term[who]])));
   out.push(`  ${num(bonds.neverClaimed)} never used to claim · ${num(bonds.termInVault)} TERM in the TERM bond vault` +
-    (bonds.harness !== null ? ` · ${num(bonds.harness)} belong to the load harness` : ""));
+    (bonds.harness !== null ? ` · ${num(bonds.harness)} belong to the load harness` : "") +
+    (bonds.team ? ` · ${num(bonds.team)} to other team wallets` : ""));
   if (!relayerKey) out.push("  (without the relayer's key, bonds it paid for are counted under \"someone else\")");
 
   out.push("");

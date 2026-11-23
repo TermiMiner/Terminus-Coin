@@ -6,8 +6,9 @@
 # one on the machine. Public keys only: the secret keys stay on the machine that
 # runs the harness.
 #
-# A wallet the team mines with on devnet that is not listed here counts as
-# "everyone else", which is where §6 looks for external testers. Add it.
+# A wallet the team mines with on devnet outside the harness belongs in
+# devnet_team_pubkeys.txt instead. One in neither file counts as "everyone
+# else", which is where §6 looks for external testers.
 
 # The 31-day soak, on the soak host, from 2026-11-23 (24 wallets)
 EMjb16KCyWgg2SD9cvX4cU3zGKo4Rp3MvyRwdk56yJdD

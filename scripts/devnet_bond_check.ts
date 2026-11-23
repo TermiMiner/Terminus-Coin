@@ -675,6 +675,8 @@ async function main() {
       for (const k of ["sol.withdraw", "term.withdraw"] as StepKey[]) {
         console.log(`   https://explorer.solana.com/tx/${st.sigs[k]}?cluster=devnet`);
       }
+      console.log(`\n Add both wallets to scripts/devnet_team_pubkeys.txt, or devnet_status.ts counts them as testers:`);
+      for (const leg of legs) console.log(`   ${leg.kp.publicKey.toBase58()}`);
     }
     console.log(line);
   }

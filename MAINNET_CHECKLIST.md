@@ -341,10 +341,11 @@ v2 is cut on `main`, so the tag, CI, devnet and mainnet are one source.
 > The second criterion below is not satisfiable by waiting. Difficulty holds steady only at 100 claims / 600s (one every 6s), and the 60s per-wallet rate limit caps a wallet at 1 claim/min — so **≥10 wallets must mine continuously** just to hold difficulty flat. Below that it falls (by half per window at ≤5 claims/min) to the floor of 16, where devnet sits now. `scripts/devnet_load.ts` drives that load at set claim rates; see the plan.
 
 - [ ] At least 30 days of devnet operation with multiple miners
-  - **Not started (checked 2026-11-22).** No claim had landed since 2026-11-17 03:46 UTC, and in the 40 days before that devnet saw claims on 7 days, the longest stretch about six hours: the load harness had only been run in sessions. The 30 days count from when continuous mining starts. Run the harness on the 31-day schedule, `scripts/devnet_load_soak.json` ([how](docs/devnet-beta.md#running-it-for-30-days)), and check on it with `scripts/devnet_status.ts`, which reads the chain and needs no key.
+  - **Running since 2026-11-23 03:02 UTC.** The harness is on the 31-day schedule, `scripts/devnet_load_soak.json`, on an always-on VPS. The 30 days complete on **2026-12-23 03:02 UTC**, and the schedule ends a day later. Host, keys and how it started are in [the current run](docs/devnet-beta.md#the-current-run). Check on it from anywhere with `scripts/devnet_status.ts`, which reads the chain, needs no key, and counts the harness's wallets apart from everyone else's.
+  - Before that (checked 2026-11-22), the harness had only been run in sessions, on a laptop that slept through most of 2026-11-07 to 11-22. In the 40 days to 2026-11-22 devnet saw claims on 7 days, the longest stretch about six hours.
 - [ ] No critical bugs reported
 - [ ] Difficulty adjustment observed working under varying load
-  - The 31-day schedule runs the four-hour ramp on days 1, 8 and 22.
+  - The 31-day schedule runs the four-hour ramp on days 1, 8 and 22. For the current run that is 2026-11-23, 11-30 and 12-14, each 03:02–07:02 UTC.
 - [ ] Bond flows exercised on devnet: deposit by external testers, withdrawal of both kinds by script
   - [ ] **Deposit, by external testers.** The site deposits the SOL bond with a wallet's first claim, whether the wallet or the relayer pays for it. Evidence: `BondDeposited` from wallets outside the team.
   - [ ] **Withdrawal of both kinds, by script:** `scripts/devnet_bond_check.ts` ([what it does](docs/devnet-beta.md#bond-withdrawal-check)). Run it on devnet, which carries the build that ships (next item), and record here what it prints: the date, the two withdrawal signatures and the program's deploy slot.

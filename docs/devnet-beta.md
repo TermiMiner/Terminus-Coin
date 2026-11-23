@@ -62,7 +62,7 @@ Every §6 criterion maps to an event the program already emits, so the checkboxe
 npx ts-node -P tsconfig.json scripts/devnet_status.ts [--days N] [--json]
 ```
 
-When the harness's pool file is on the same machine, the harness's wallets are counted apart from everyone else's. It exits 2 when no claim has landed for `STALE_AFTER_HOURS` (default 3), so a scheduled check can alert on it.
+The harness's wallets are counted apart from everyone else's on any machine: their public keys are listed in `scripts/devnet_load_pubkeys.txt`, and a pool file on the same machine adds its own. A team wallet missing from that list counts as a tester, so add new pools to it. It exits 2 when no claim has landed for `STALE_AFTER_HOURS` (default 3), so a scheduled check can alert on it.
 
 ## The load profile
 
@@ -149,6 +149,17 @@ Run it on something that stays awake for a month, ideally an always-on Linux mac
   ```
 
 Check on it from anywhere with `scripts/devnet_status.ts` (Track C), which reads the chain and needs no key.
+
+### The current run
+
+Started **2026-11-23 03:02:53 UTC** on `scripts/devnet_load_soak.json`. The 30 days are done at 2026-12-23 03:02 UTC, and the schedule ends 2026-12-24 03:02 UTC. Its ramps fall on 2026-11-23, 11-30 and 12-14, each 03:02–07:02 UTC.
+
+- **Host:** a DigitalOcean droplet running Ubuntu 24.04, with 1 vCPU and 1 GB, at about $6 a month. It runs the user service above as an unprivileged user, on Node 24, behind a firewall that lets in SSH only. The operator has its address and SSH access; neither is in this repo. Destroy the droplet once the schedule ends: a powered-off droplet still bills.
+- **Funding wallet:** `D2LrFMKMn2pHJyXuQV6nbUdvKqg9NojyLUrWZPFUSq72`. It was created on the droplet and never copied off it, and holds 2 devnet SOL from the deployer. Setup moved 0.288 SOL of its 1.5 SOL budget to the pool.
+- **Pool:** 24 wallets. They are listed in `scripts/devnet_load_pubkeys.txt` alongside the first pool's, so `devnet_status.ts` counts both as the harness on any machine.
+- **The first pool is retired.** It ran from the operator's laptop. Don't run the harness there while this run is on: the two copies would race each other for `last_hash`.
+- **Start-up:** the droplet sets wallets up faster than the laptop did, and the burst tripped the public RPC's per-IP limits (`429 … Connection rate limits exceeded`). Setup crashed three times. Each restart resumed the schedule without funding a wallet twice, and mining began at 03:08 UTC. There were no rate-limit errors in its first ten minutes of mining.
+- **On the droplet:** `journalctl --user -u devnet-load -f` follows the run, and `devnet-load.jsonl` in the checkout is its event log.
 
 ## Bond withdrawal check
 

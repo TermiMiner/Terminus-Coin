@@ -507,6 +507,10 @@ export default function App() {
   function handleGenerateBurner() {
     burner.generate();
     refreshWallets();
+    // A new burner holds no SOL, so a remembered SELF-FUND route could only leave
+    // it at "needs topup" with Start disabled, the one-click start included. Mine
+    // it on AUTO, which routes a wallet without SOL through the relayer.
+    if (modePreference === "self-fund") setModePreference("auto");
   }
 
   function handleImportBurner() {
@@ -824,6 +828,25 @@ export default function App() {
           <span className="status-pill error">PROGRAM PAUSED</span>
         )}
       </div>
+      {/* Why Start is disabled for a burner that can't pay its own fees. Said
+          here because the ROUTING panel, which shows the mode, starts collapsed
+          on phones. A SELF-FUND route holds a burner here without waiting for
+          the relayer probe; AUTO reaches this state only once the probe has
+          found no relayer. */}
+      {!mining && !autoStartPending && isBurner && miningMode === "self-fund-needs-topup" && (
+        modePreference === "self-fund" ? (
+          <div className="log-line warn prose">
+            ROUTE is set to SELF-FUND, and this burner doesn't hold enough SOL to pay its own fees.
+            Use AUTO to mine through the relayer, or top up the burner.{" "}
+            <button className="btn" onClick={() => setModePreference("auto")}>[ USE AUTO ]</button>
+          </div>
+        ) : (
+          <div className="log-line warn prose">
+            No relayer can pay this burner's fees right now, so it can't mine yet. Try again in a few
+            minutes, or send the burner a little SOL.
+          </div>
+        )
+      )}
 
       {/* Routing config (ROUTE / RELAYERS / MODE / tip) — collapsible so it
           doesn't crowd the CTA or small screens; default collapsed on mobile. */}

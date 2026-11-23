@@ -9,3 +9,7 @@
 # The bond withdrawal check on devnet, 2026-11-23: its SOL-bond and TERM-bond wallets
 g63YkVg3dwAqryynu7jNuiGXddPABnbNwEjkGVMdGqF
 7i7mk9nQ3f4FcEqNSbuBD2BzsLuxwf7JMCLhURL8b4Zw
+
+# Burners from testing the site's one-click Start, 2026-11-23 (the live site, then the fix)
+HzyD3AhfNvAi5Su7ZtZMoPJYD7z4kKbevNBT5MxWME9M
+A2RrLwumU2S2GG5LfH6ggPhpGkvnLW1mmLMBFbpapgQa

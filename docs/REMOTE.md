@@ -46,6 +46,8 @@ Each of these signs with, or reads, a key that exists only on this box. It will 
 | Team vest claim | `npm run team-claim` (`scripts/claim_team_vest.ts`) | `team-wallet.json` |
 | Run the shared relayer | see `RELAYER_OPERATOR.md` | `term-shared-relayer.json` / Vercel env key |
 
+The load harness is the one exception to the table: it may run on an always-on host the operator controls, and the 30-day soak does ([the current run](devnet-beta.md#the-current-run)). Its funding wallet is a devnet key created on that host, with no authority over the program. None of the keys in the table, or in the next section, go to that host, and none of this runs in a cloud sandbox.
+
 ---
 
 ## Where the secrets live (all local-only, none in git)

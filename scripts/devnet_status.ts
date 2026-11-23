@@ -62,8 +62,10 @@ const UPGRADEABLE_LOADER = new PublicKey("BPFLoaderUpgradeab1e111111111111111111
 const PROGRAMDATA_HEADER = 45; // bytes before the program's ELF in its programdata account
 const BOND_SIZE = 8 + 49;      // the current BondAccount; older 25-byte bonds predate rent_payer
 // What a gasless first claim costs the relayer: rent on the new wallet's token
-// account (165 bytes), bond (57) and user_state (24), and the fee.
-const FIRST_CLAIM_LAMPORTS = 2_039_280 + 1_287_600 + 1_057_920 + 5_000;
+// account (165 bytes), bond (57) and user_state (24), and the fee. The rent is
+// read from the cluster, because Solana is cutting it in steps (SIMD-0437).
+const FIRST_CLAIM_ACCOUNT_SIZES = [165, 57, 24];
+const FIRST_CLAIM_FEE_LAMPORTS = 5_000;
 const DAY = 86_400;
 const WINDOWS = [["24h", DAY], ["7d", 7 * DAY], ["30d", 30 * DAY]] as const;
 
@@ -216,6 +218,8 @@ async function main(): Promise<number> {
   let relayerKey: PublicKey | null = null;
   if (relayerUrl) {
     try {
+      const firstClaimLamports = FIRST_CLAIM_FEE_LAMPORTS + (await Promise.all(FIRST_CLAIM_ACCOUNT_SIZES.map(
+        (size) => withRetry(() => conn.getMinimumBalanceForRentExemption(size))))).reduce((a, b) => a + b, 0);
       const res = await fetch(`${relayerUrl}/api/relayer-info`, { signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const info = await res.json() as {
@@ -224,7 +228,7 @@ async function main(): Promise<number> {
       relayerKey = new PublicKey(info.pubkey);
       relayer = {
         url: relayerUrl, pubkey: info.pubkey, balanceLamports: info.balance,
-        gaslessFirstClaims: Math.floor(info.balance / FIRST_CLAIM_LAMPORTS),
+        gaslessFirstClaims: Math.floor(info.balance / firstClaimLamports),
         dailyCapLamports: info.dailyCap, dailySpentLamports: info.dailySpent, bootstrapMode: info.bootstrapMode,
       };
     } catch (err) {

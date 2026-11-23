@@ -13,21 +13,25 @@ import {
 } from "@solana/spl-token";
 import { confirmOrCheckLanded } from "./confirmTx";
 import type { MinerWallet } from "./burnerWallet";
+import type { RentTable } from "./rent";
 
 export const TERM_DECIMALS = 6;
 
-// Rough SOL the source must hold: tx fee + (dest ATA rent only if it must be
-// created). The UI uses this to gate Send so a near-empty gasless burner gets a
-// clear message instead of a failed send.
 export const SWEEP_FEE_LAMPORTS = 5_000;
-export const ATA_RENT_LAMPORTS = 2_039_280; // classic SPL token ATA rent-exempt min
 
-// A tx may not leave a writable system account (our fee payer) RENT-PAYING:
-// 0 < balance < this floor is rejected with InsufficientFundsForRent. The sweep
-// never drains SOL to exactly 0, so the wallet must END above this floor —
-// budget it on top of fee + rent in the SOL guard, or the guard passes a tx the
-// node then rejects. (= getMinimumBalanceForRentExemption(0).)
-export const FEE_PAYER_RENT_FLOOR_LAMPORTS = 890_880;
+/**
+ * Rough SOL the source must hold for a sweep. The UI uses this to gate Send so a
+ * near-empty gasless burner gets a clear message instead of a failed send. It is
+ * the tx fee, plus the destination ATA's rent only if it must be created, plus
+ * the wallet's own rent-exempt minimum: a tx may not leave a writable system
+ * account (our fee payer) RENT-PAYING, so 0 < balance < that minimum is rejected
+ * with InsufficientFundsForRent. The sweep never drains SOL to exactly 0, so the
+ * wallet must END above it — budget it here, or the guard passes a tx the node
+ * then rejects. Both minimums come from the cluster (rent.ts).
+ */
+export function sweepNeedLamports(rent: RentTable, needsAta: boolean): number {
+  return SWEEP_FEE_LAMPORTS + (needsAta ? rent.tokenAccount : 0) + rent.wallet;
+}
 
 /**
  * Parse a user-typed TERM amount (plain decimal, ≤6 places) to raw u64 units,

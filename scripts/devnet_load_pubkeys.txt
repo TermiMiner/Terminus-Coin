@@ -1,0 +1,62 @@
+# Public keys of the devnet load harness's wallet pools (scripts/devnet_load.ts).
+#
+# scripts/devnet_status.ts counts these wallets as the harness, wherever it
+# runs, so a cloud session or a fresh checkout tells the harness's mining apart
+# from testers' without the pool file. It also reads a pool file if there is
+# one on the machine. Public keys only: the secret keys stay on the machine that
+# runs the harness.
+#
+# A wallet the team mines with on devnet that is not listed here counts as
+# "everyone else", which is where §6 looks for external testers. Add it.
+
+# The 31-day soak, on the soak host, from 2026-11-23 (24 wallets)
+EMjb16KCyWgg2SD9cvX4cU3zGKo4Rp3MvyRwdk56yJdD
+GJXims9eJVoi7CWKHF7XfJX6Zc4r9hPnzC9P14JRdFCV
+Ga9YMHCpMrHVbmSVyDeoyp7J6tKXBZdN3WznLPsVGJrh
+HbZ9AeRewjW44HEiyRuci151eARnZQ6AF5nqeZ4XJWDn
+2FmG2DZe6sDoYTWW2RAdw8whvLpmFXj24W2HEFFm7QdU
+6AKYx7BkFz6W7eFJWFkvY4FQLhFECVNrm4HNhvM8kSFm
+8v2YArAFGGYNDa1zV4w3NCzgarisTvQHws1XgCW4yhK
+BWxWr4Yu5239FNcjnsw2RmeSq6c4q6dKndTK7hjgLUse
+CnchEmZmJ1Z9hU2D2SqxUH6worbFWLqUCcNZMkJfN2Xz
+HUVBAeaC27dGRE6sDHqamVbVahhYpwsuwpARHdSWE9RB
+Gnvb5KRER21jBJDFeSY5y7NA4trNorbS7hVddhZDdoxW
+58vq6jeaRzYsZauNFR1ELa1ChuBff1bdBGZcWvcaWkwe
+12Pvt4Xea3ouzdAJzhK1btoAWuNzCTnKHLk8puLD4kTY
+8aLdm9ncpMYPF3K6shoMSe98Qru2vhW6AnSVa49Byh75
+F25c5BEVV9EkEcGpcvta145Xnm53BMYfmM1xKMCStV9D
+36nEBnNKSt3Q6FWsgXrbj6WXSejbr13t5FeqGwvpcgQm
+4qxEKW2f7sXaybrSueEDpMQpN6GjDze9cjNCn5Gj52Dy
+7pGwmugaCuwcJTY9Qf5VGHhGudYmPaXC2z5zsnTPRpQA
+CEvTYRyuNvK1fzGPDtbCA8G2htYQM2yjzHWszRbkJ8qE
+6JntPDUxLndZMkwDvv9ATWbGVVV511SD5izYrRxKub6Y
+3KHwggbBEDyQJB3AiZhb3v18nVs9YPdKQCEgEQzwHF1a
+DChtEcbRRWwV7DfzYzRAiE5ovBeNC4WCjvfdmGG5mwna
+HCN8Wa4REMyvdjs3tKnFZGoUmmJ76JcQeAziGN4DdoS3
+CuBqo85wTysoQCA4ZjJgehGXm4LpaCqkTutLMaXuQP63
+
+# Retired: the first pool, run from the operator's laptop 2026-11-07 to 2026-11-23 (24 wallets)
+3yWWSgWNbLkLWd4HmA16HawS8YqdbgdxNPSC9t8xAAPL
+CdAhQiANPpdrm9qnu2pDdixz5neyWsUYkxWicSGSJQo9
+26QMg8vgzsA5R9ksobBgFmtGrNcp81uiwd9cHmPwN6v5
+BAcywwRnjHoMDpavB9XXBNDJynyt5ZNpcFLYaasDt1vy
+4QVzJu2VZziwE7cCv4N5BaPbkhyjRHTNDNYzqQTHHPdd
+3Pb5zDU9QseQrndimJx3YHNW2R5E9TCwY524yKWr4B6F
+AoGb6Rd8Q2hbzVGwcr3fKwPZyj77Y89Z2GP6or6Q1xMU
+2LZr5hmQxb5aq8DUnUzmukafAwdF8Krp8YXgP653zBFF
+9DQKB5D5AjAUMcpbPVNsy8XwbMd1wojq6F2woPnADDo8
+3hRZ1K9BY9SC3byHsd6v1TZDVm8wu1gS41DnJ4VYZ7qw
+GppGxB8EfCTdZLebp1Nk5gppmKddebHNvEhormCepFc6
+94E8JszxCndi5Uuevy5UTJuwHkuLUwsNWwypWZY4QZeD
+4aAZSKuDKgN1X77mDk3281U6R89pcMPzDSuvvAy2Knmy
+32JXaH5h6H2myy7Dvu33NY6RrnLUWnau12Y9rrundRAc
+3q9aLHVPVAQPajuyffUoewfPndGwHErKRD2Jev8p9GtJ
+ECXFpPACD8vYQVz5EmPnNY2w4ubq4dTXTRRSaam5SdYs
+HnzBjH6XdXMeUup5uzKyuWJ5kjdCbcnDV9aSsaM5ovtK
+DppM6gPm5KuZgB3sRUff59M8Ka5pPT21bCMnP9BxGE3L
+mXuAgWh8v1Vq5cGWHGaciuxjVgxnHX6EjCa6iKwy8Ao
+AHQvAgKderd3RuV2oLPtrsij26siMPK3TauE8WAmYCCg
+Gf9NL8MVF48wmLW4onW3eggRD2WkbCqf6Lb98zxGwusU
+E3GwGqUDjn4XmJuoxPnvDuPxHV5ttTfcWFYnn99JjkHX
+7G6F3Q6a2HwitGHdMVsyzbqF2rMpTFjtPwWHjKXu9Nz7
+DhMFv9b2DrAbk3WzYNXvHTx6iFpyrWmqkgzeUq81ao3V

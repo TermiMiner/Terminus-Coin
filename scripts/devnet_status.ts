@@ -15,10 +15,11 @@
 // user_state, whose last_claim_time the program updates on every claim, so
 // "miners in the last 7 days" is exact without reading any transaction.
 //
-// When the load harness's wallet pool is on the same machine
-// (scripts/.devnet-load-wallets.json, or WALLET_FILE), the harness's wallets
-// are counted apart from everyone else's. Only their public keys are taken
-// from the file.
+// The load harness's wallets are counted apart from everyone else's. They are
+// the public keys in scripts/devnet_load_pubkeys.txt, which the repo carries
+// so this works on any machine, plus the wallets in a pool file if there is
+// one here (scripts/.devnet-load-wallets.json, or WALLET_FILE). Only public
+// keys are taken from the pool file.
 //
 // Usage:
 //   npx ts-node -P tsconfig.json scripts/devnet_status.ts [--days N] [--json]
@@ -30,7 +31,7 @@
 //   RPC_URL            default https://api.devnet.solana.com
 //   RELAYER_URL        relayer to ask for its balance; on devnet the default is
 //                      https://terminus-coin.vercel.app
-//   WALLET_FILE        the load harness's wallet pool (default scripts/.devnet-load-wallets.json)
+//   WALLET_FILE        a load harness wallet pool on this machine (default scripts/.devnet-load-wallets.json)
 //   STALE_AFTER_HOURS  mining counts as stopped after this long without a claim (default 3)
 //
 // Exit code: 0 while mining runs, 2 once it has stopped, 1 on an error.
@@ -50,6 +51,7 @@ const PROGRAM_ID = new PublicKey(idl.address);
 const coder = new BorshAccountsCoder(idl);
 const LAUNCH_SCRIPT = path.join(__dirname, "mainnet-launch.sh");
 const LOCAL_BUILD = path.join(__dirname, "../target/deploy/terminuscoin.so");
+const HARNESS_KEYS = path.join(__dirname, "devnet_load_pubkeys.txt");
 
 const CLUSTERS: Record<string, string> = {
   "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d": "mainnet-beta",
@@ -143,6 +145,17 @@ function harnessWallets(file: string): PublicKey[] | null {
   return secrets.filter((s) => s.length === 64).map((s) => new PublicKey(Uint8Array.from(s.slice(32))));
 }
 
+/** Public keys listed one per line, as in scripts/devnet_load_pubkeys.txt; "#" starts a comment. */
+function listedWallets(file: string): PublicKey[] | null {
+  if (!fs.existsSync(file)) return null;
+  return fs.readFileSync(file, "utf8").split("\n")
+    .map((line) => line.replace(/#.*/, "").trim())
+    .filter(Boolean)
+    .map((key) => {
+      try { return new PublicKey(key); } catch { throw new Error(`${file}: "${key}" is not a public key.`); }
+    });
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<number> {
@@ -219,9 +232,14 @@ async function main(): Promise<number> {
     }
   }
 
-  // ── The harness's wallets, if its pool is here ──────────────────────────────
+  // ── The harness's wallets: the ones the repo lists, and a pool file here ────
   const walletFile = expand(process.env.WALLET_FILE ?? path.join(__dirname, ".devnet-load-wallets.json"));
-  const pool = harnessWallets(walletFile);
+  const listed = listedWallets(HARNESS_KEYS);
+  const local = harnessWallets(walletFile);
+  const listedKeys = new Set(listed?.map((pk) => pk.toBase58()));
+  // Pool wallets the list lacks: other machines count them as testers.
+  const unlisted = (local ?? []).filter((pk) => !listedKeys.has(pk.toBase58()));
+  const pool = listed || local ? [...(listed ?? []), ...unlisted] : null;
   const poolUserStates = new Set(pool?.map((pk) => pda("user_state", pk).toBase58()));
   const poolBonds = new Set(pool?.map((pk) => pda("bond", pk).toBase58()));
 
@@ -293,7 +311,10 @@ async function main(): Promise<number> {
     program, state, miners,
     claimsPerDay: [...perDay].map(([day, c]) => ({ day, ...c })),
     bonds, relayer,
-    harnessPool: pool ? { file: walletFile, wallets: pool.length } : null,
+    harnessPool: pool ? {
+      wallets: pool.length, listed: listed?.length ?? 0, localFile: local ? walletFile : null,
+      unlisted: unlisted.map((pk) => pk.toBase58()),
+    } : null,
   };
 
   if (asJson) {
@@ -322,7 +343,10 @@ async function main(): Promise<number> {
       ? [counts("load harness", miners.harness), counts("everyone else", miners.others)] : []),
   ]));
   if (!pool) {
-    out.push(`  The harness's wallets are not counted apart: its pool file is not on this machine (${walletFile}).`);
+    out.push(`  The harness's wallets are not counted apart: neither ${HARNESS_KEYS} nor a pool file (${walletFile}) is here.`);
+  } else if (unlisted.length) {
+    out.push(`  ${unlisted.length} wallet${unlisted.length === 1 ? "" : "s"} in ${walletFile} ${unlisted.length === 1 ? "is" : "are"} ` +
+      `not in scripts/devnet_load_pubkeys.txt, so other machines count ${unlisted.length === 1 ? "it" : "them"} as everyone else. Add ${unlisted.length === 1 ? "it" : "them"}.`);
   }
   out.push("", ...table(["Claims per day (UTC)", "landed", "failed"],
     report.claimsPerDay.map(({ day, landed, failed }) => [day, landed, failed])));

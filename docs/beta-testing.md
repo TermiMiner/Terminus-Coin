@@ -88,7 +88,7 @@ Reading this list first will save you a report.
 - **`Stale nonce` and `Chain advanced … re-mining`.** Every claim that lands, from anyone, changes the puzzle for everyone. If another miner gets in first, your solution is void and the miner starts again. You will see this often while we run load tests. It is a problem only if none of your claims land for a long stretch.
 - **Rewards differ from claim to claim.** The base reward is 3.4 TERM, and luck multiplies each claim by 1, 2, 4 and so on up to 256. Half of all claims get the base amount. About one in 256 gets the full 256×.
 - **You receive a little less than the "gross" figure in the log.** 3% of every reward is set aside for stakers, and between 0.25% and 5% is burned (0.25% while difficulty is low). When a relayer pays your fees, its tip comes out too.
-- **`First mine — also depositing 0.001 SOL bond.`** Every wallet locks a small one-time bond, about 0.0013 SOL, with its first claim. When you mine without SOL, the relayer pays it.
+- **`First mine — also depositing 0.001 SOL bond.`** Every wallet locks a small one-time bond, about 0.001 SOL, with its first claim. When you mine without SOL, the relayer pays it.
 - **`TAB PAUSED`.** Browsers slow down or stop pages that are in the background, and phones stop them when the screen locks. Mining picks up when you return to the tab.
 - **Difficulty moves.** The `Difficulty` figure under `STATS` rises when claims across the whole network arrive faster than one every six seconds, and falls when they arrive slower. During load tests it climbs, and each round takes your browser longer.
 
@@ -96,7 +96,7 @@ Reading this list first will save you a report.
 
 - **A prompt for every claim.** These wallets ask you to approve each transaction. The burner does not, which is why the site recommends it for mining.
 - **Warnings such as "failed to simulate the results of this request".** The wallet tests each transaction before it signs, and a mining claim stops being valid a few seconds after it is made. Claims also go stale while a prompt waits for you.
-- **`WALLET NEEDS SOL`.** You chose `[ SELF-FUND ]` for a wallet that holds too little SOL. Its first claim needs about 0.005 SOL.
+- **`WALLET NEEDS SOL`.** You chose `[ SELF-FUND ]` for a wallet that holds too little SOL. Its first claim needs about 0.004 SOL.
 
 We still want the detail. A wallet that cannot connect at all, a prompt that shows the wrong network or the wrong amounts, and a claim the page says landed when it did not are all worth a report.
 
@@ -104,8 +104,10 @@ We still want the detail. A wallet that cannot connect at all, a prompt that sho
 
 A burner that mines through the relayer holds no SOL. Mining works without it, but two things do not:
 
-- **Withdrawing TERM.** The page tells you how much SOL is needed, for example `Need ~0.0029 SOL …`.
-- **Your first stake.** It opens a small account that your own wallet pays for, so the wallet needs about 0.0024 SOL: 0.0015 SOL of rent, plus the minimum every wallet has to keep. The `STAKE` tab says so before you stake (`Your first stake opens a stake account…`), and offers `[ TOP UP BURNER ]` when a relayer can top up your burner.
+- **Withdrawing TERM.** The page tells you how much SOL is needed, for example `Need ~0.0021 SOL …`.
+- **Your first stake.** It opens a small account that your own wallet pays for, so the wallet needs about 0.0018 SOL: 0.0011 SOL of rent, plus the minimum every wallet has to keep. The `STAKE` tab says so before you stake (`Your first stake opens a stake account…`), and offers `[ TOP UP BURNER ]` when a relayer can top up your burner.
+
+The amounts here are devnet's in November 2026. Solana is lowering rent in steps, and the page works out what it asks for from the network's current rate, so go by the page when the two differ.
 
 To give a burner SOL, choose `[ SELF-FUND ]` under `ROUTING` and press `[ TOP UP BURNER ]`, or send it devnet SOL from <https://faucet.solana.com>. Once a burner holds enough SOL, `AUTO` pays fees from it and stops using the relayer.
 

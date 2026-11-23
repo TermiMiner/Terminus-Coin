@@ -7,22 +7,22 @@ import { MINT_PDA } from "./useChainState";
 import type { MinerWallet } from "./burnerWallet";
 import type { BroadcastAdapter } from "./relayerAdapter";
 import { confirmOrCheckLanded } from "./confirmTx";
-import { FEE_PAYER_RENT_FLOOR_LAMPORTS } from "./sweepTerm";
+import type { RentTable } from "./rent";
 
 // A wallet's first stake creates its stake account (UserStakeAccount, 8 + 80
 // bytes) with `payer = authority`, so the wallet pays the rent itself even when
 // a relayer pays the fee. A burner on the gasless path holds no SOL, and its
 // first stake used to fail at the relayer's simulation with no reason given.
-export const STAKE_ACCOUNT_RENT_LAMPORTS = 1_503_360;
 const STAKE_FEE_LAMPORTS = 5_000; // one signature, no priority fee
 
 /**
  * SOL a wallet must hold for its first stake: the stake account's rent, the fee
  * when the wallet pays its own, and the rent-exempt minimum the wallet has to
  * keep afterwards (a transaction may not leave it above zero but below that).
+ * Both minimums come from the cluster (rent.ts).
  */
-export function firstStakeLamports(walletPaysFee: boolean): number {
-  return STAKE_ACCOUNT_RENT_LAMPORTS + (walletPaysFee ? STAKE_FEE_LAMPORTS : 0) + FEE_PAYER_RENT_FLOOR_LAMPORTS;
+export function firstStakeLamports(rent: RentTable, walletPaysFee: boolean): number {
+  return rent.stakeAccount + (walletPaysFee ? STAKE_FEE_LAMPORTS : 0) + rent.wallet;
 }
 
 export type StakingAction = "stake" | "unstake" | "claim_yield";

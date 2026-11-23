@@ -25,13 +25,15 @@ import { useCluster, isPlayMoney, clusterUrlFlag } from "./cluster";
 import { useStaking, deriveUserStakePDA } from "./useStaking";
 import { executeStakingAction, firstStakeLamports } from "./stakingActions";
 import { AUDIT_STATUS } from "./auditStatus";
-import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, SWEEP_FEE_LAMPORTS, ATA_RENT_LAMPORTS, FEE_PAYER_RENT_FLOOR_LAMPORTS } from "./sweepTerm";
+import { sweepTerm, validateSweepDestination, destNeedsAta, parseTermAmount, sweepNeedLamports } from "./sweepTerm";
+import { FALLBACK_RENT, fetchRentTable, rentOrFallback, type RentTable } from "./rent";
 import logoUrl from "./assets/logo.jpg";
 
-// First-claim setup costs: ATA rent (~0.00204 SOL) + bond_account rent (~0.00107 SOL)
-// + user_state rent (~0.00100 SOL) = ~0.00411 SOL one-time. After setup, each
-// self-fund claim costs ~5K lamports of tx fee — so 0.0075 SOL of topup
-// covers setup + ~12 hours of 24/7 mining at the 60s cooldown.
+// First-claim setup costs: rent for the TERM ATA, the bond and the user_state,
+// about 0.0032 SOL one-time on devnet since the November 2026 rent cut (0.0044
+// at the old rate; the site reads the current figures, see rent.ts). After
+// setup, each self-fund claim costs ~5K lamports of tx fee — so 0.0075 SOL of
+// topup covers setup + ~12 hours of 24/7 mining at the 60s cooldown.
 // Threshold sits BELOW the topup amount so a freshly-topped burner doesn't
 // immediately re-trigger the auto-topup path (which would fail per-wallet quota).
 const BURNER_TOPUP_LAMPORTS  = 7_500_000;   // 0.0075 SOL per top-up
@@ -273,18 +275,30 @@ export default function App() {
   const topupRelayer = relayerStatuses.find((s) => s.reachable && !!s.info?.pubkey && hasQuota(s)) ?? null;
   const topupViaShared = !!topupRelayer && isBurner && !!burner.publicKey;
 
+  // Rent-exempt minimums from the cluster (rent.ts). The old-rate figures stand
+  // in until it answers.
+  const [rent, setRent] = useState<RentTable>(FALLBACK_RENT);
+  useEffect(() => {
+    let live = true;
+    fetchRentTable(connection).then((r) => { if (live) setRent(r); }, () => {});
+    return () => { live = false; };
+  }, [connection]);
+
   // Routing preference — self-fund FIRST when the wallet can pay its own
   // way. Each self-funded claim costs ~5K lamports; through a relayer it
   // costs the relayer ~5K SOL AND the user a 0.5 TERM tip (under bootstrap
   // mode). Self-fund is strictly better when feasible. Relayer routing is
   // reserved as a SUBSIDY/fallback for fresh wallets without SOL.
   //
-  // Cold first-claim cost (self-fund — the wallet pays all rent + fee) ≈ 4.39M
-  // lamports: user TERM ATA 2,039,280 + bond (57B) 1,287,600 + UserState (24B)
-  // 1,057,920 + ~5K fee. The gate MUST exceed this, or a wallet passes here and
-  // then fails on-chain at first claim (this stranded a real wallet). Repeat
-  // claims cost only the ~5K fee. 4.6M leaves ~0.2M headroom for fee variance.
-  const SELF_FUND_MIN_LAMPORTS = 4_600_000;
+  // Cold first-claim cost (self-fund — the wallet pays all rent + fee): one tx
+  // opens the user's TERM ATA (165B), bond (57B) and UserState (24B) and pays a
+  // ~5K fee, and the wallet must END with its own rent-exempt minimum or the tx
+  // is rejected (InsufficientFundsForRent). That is about 3.86M lamports on
+  // devnet since the November 2026 rent cut, and 5.28M at the old rate. The gate
+  // MUST cover all of it, or a wallet passes here and then fails on-chain at
+  // first claim (this stranded a real wallet). Repeat claims cost only the ~5K
+  // fee. 0.2M of headroom for fee variance.
+  const SELF_FUND_MIN_LAMPORTS = rent.tokenAccount + rent.bond + rent.userState + 5_000 + rent.wallet + 200_000;
   const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
   // External wallets (Phantom) must actually have SOL to self-fund — connecting
   // without funds is not enough. The previous logic let any connected Phantom
@@ -562,7 +576,7 @@ export default function App() {
 
   // A first stake needs SOL in the wallet itself (stakingActions.ts). Shown under
   // the stake input before the wallet tries, and again if it tries anyway.
-  const firstStakeNeed = firstStakeLamports(!broadcaster);
+  const firstStakeNeed = firstStakeLamports(rent, !broadcaster);
   const canTopUpBurner = isBurner && !!burner.publicKey && (topupViaShared || localAvailable);
   const firstStakeShort = !!activeWallet.publicKey && !staking.loading && !staking.hasStakeAccount
     && staking.walletBalance > 0n && activeSolBalance !== null && activeSolBalance < firstStakeNeed;
@@ -596,12 +610,15 @@ export default function App() {
       // Loss-prevention: reject a token-account / self destination before sending.
       const reason = await validateSweepDestination(connection, destPk, activeWallet.publicKey);
       if (reason) { setSweepMsg(reason); return; }
-      // SOL sufficiency (fee + recipient ATA rent if it must be created).
-      const needsAta = await destNeedsAta(connection, MINT_PDA, destPk);
-      // fee + (recipient ATA rent if created) + the fee-payer's own rent-exempt
-      // floor: Solana rejects a tx that leaves the payer rent-paying
+      // SOL sufficiency: fee + (recipient ATA rent if it must be created) + the
+      // fee-payer's own rent-exempt floor, at the cluster's current rent.
+      // Solana rejects a tx that leaves the payer rent-paying
       // (InsufficientFundsForRent), so the wallet must END above the floor.
-      const needLamports = SWEEP_FEE_LAMPORTS + (needsAta ? ATA_RENT_LAMPORTS : 0) + FEE_PAYER_RENT_FLOOR_LAMPORTS;
+      const [needsAta, rentNow] = await Promise.all([
+        destNeedsAta(connection, MINT_PDA, destPk),
+        rentOrFallback(connection),
+      ]);
+      const needLamports = sweepNeedLamports(rentNow, needsAta);
       // Fresh SOL read at send time — the polled activeSolBalance can be null
       // (initial render / RPC error) or stale, and treating "unknown" as
       // sufficient would defeat this guard for the exact near-empty burner it's
@@ -647,12 +664,14 @@ export default function App() {
       // Fresh reads, as in runSweep, because the polled values can be stale.
       if (action === "stake") {
         const pk = activeWallet.publicKey;
-        const [stakeAccount, sol] = await Promise.all([
+        const [stakeAccount, sol, rentNow] = await Promise.all([
           connection.getAccountInfo(deriveUserStakePDA(pk)),
           connection.getBalance(pk),
+          rentOrFallback(connection),
         ]);
-        if (!stakeAccount && sol < firstStakeNeed) {
-          setStakeMsg(firstStakeMessage(firstStakeNeed, sol));
+        const need = firstStakeLamports(rentNow, !broadcaster);
+        if (!stakeAccount && sol < need) {
+          setStakeMsg(firstStakeMessage(need, sol));
           return;
         }
       }

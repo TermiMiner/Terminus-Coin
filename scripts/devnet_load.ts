@@ -38,10 +38,17 @@
 //   • When claims keep failing for reasons that are not the program's (the RPC
 //     node, a devnet outage), it logs an outage and backs off until claims
 //     land again.
+//   • Nothing it waits on can hang: each RPC request gives up after 30s and
+//     each send after 2 minutes. A watchdog backs that up: if the run still
+//     goes WATCHDOG_MINUTES without progress, it exits 2.
+//   • When the process didn't run for a while (the host slept, or it was
+//     stopped), it logs a clock_gap, so the record tells our downtime apart
+//     from devnet's.
 // It exits 0 when it stops on purpose (the schedule is over, Ctrl-C, the
-// funding limits are reached, mining is paused) and 1 when it crashes. A
-// supervisor that restarts it on failure therefore resumes the schedule after
-// a crash and leaves it stopped after a deliberate stop.
+// funding limits are reached, mining is paused), 1 when it crashes and 2 when
+// the watchdog stops it. A supervisor that restarts it on failure therefore
+// resumes the schedule after a crash or a hang and leaves it stopped after a
+// deliberate stop.
 //
 // See docs/devnet-beta.md for how this fits the wider beta plan.
 //
@@ -69,6 +76,8 @@
 //   FUNDING_BUDGET_SOL  most SOL moved from DEPLOYER to the pool in one
 //                       schedule, setup and top-ups together (default 1.5)
 //   FUNDING_FLOOR_SOL   least SOL DEPLOYER is left with (default 0.5)
+//   WATCHDOG_MINUTES    exit 2 after this long without progress (default 15; a
+//                       slow but working claim attempt can take about 6)
 
 import {
   AnchorProvider, BN, Program, Wallet, type Idl,
@@ -117,6 +126,15 @@ const FEE_LAMPORTS = 5_000;         // one signature, no priority fee
 const OUTAGE_AFTER = 8;
 const OUTAGE_PAUSE_MS = 15_000;
 const OUTAGE_MAX_PAUSE_MS = 120_000;
+
+// Hangs. Node's fetch waits up to 5 minutes for a response, and a request sent
+// on a connection that has died (the host slept, the network dropped) waits
+// all of it. A send can wait longer still: while the RPC node is unreachable,
+// its confirmation keeps polling for the block height.
+const RPC_TIMEOUT_MS = 30_000;      // per HTTP request to the RPC node
+const SEND_TIMEOUT_MS = 120_000;    // per send and confirm; a blockhash expires within about 90s
+const WATCHDOG_TICK_MS = 10_000;
+const CLOCK_GAP_MS = 60_000;        // a tick this late means the process didn't run: host asleep, or stopped
 
 // Program error codes, taken from the IDL rather than hard-coded (Anchor
 // numbers custom errors from 6000 in declaration order).
@@ -194,6 +212,16 @@ function solFromEnv(name: string, fallback: number): number {
   return Math.round(value * 1e9);
 }
 
+/** A number of minutes from the environment, in milliseconds. */
+function minutesFromEnv(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  const value = raw === "" ? fallback : Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a number of minutes above 0 (got ${JSON.stringify(raw)}).`);
+  }
+  return value * 60_000;
+}
+
 const sol = (lamports: number) =>
   (lamports / 1e9).toLocaleString("en-US", { maximumFractionDigits: 4 });
 
@@ -209,6 +237,15 @@ function describeError(err: unknown): string {
   let json: string | undefined;
   try { json = JSON.stringify(err); } catch { /* circular */ }
   return `${(err as any)?.constructor?.name ?? typeof err} ${json ?? String(err)}`;
+}
+
+/** Reject if `p` hasn't settled within `ms`. The work behind `p` isn't cancelled. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -237,10 +274,11 @@ function meetsDifficulty(hash: Uint8Array, target: bigint): boolean {
  * 72 bytes = nonce (u64 LE) || last_hash (32) || miner pubkey (32).
  *
  * Yields to the event loop periodically, so a long search at high difficulty
- * doesn't block signal handling or the RPC connection.
+ * doesn't block signal handling or the RPC connection, and calls `onYield`
+ * each time so the watchdog can see it working.
  */
 async function mineNonce(
-  lastHash: number[], user: PublicKey, difficulty: bigint,
+  lastHash: number[], user: PublicKey, difficulty: bigint, onYield: () => void,
 ): Promise<{ nonce: BN; attempts: number }> {
   const target = difficulty <= 1n ? MAX_U64 : MAX_U64 / difficulty;
   const input = new Uint8Array(72);
@@ -255,6 +293,7 @@ async function mineNonce(
       return { nonce: new BN(n.toString()), attempts };
     }
     if (attempts % MINE_YIELD_EVERY === 0) {
+      onYield();
       await new Promise((r) => setImmediate(r));
     }
   }
@@ -269,8 +308,20 @@ async function main() {
   if (!deployerFile) throw new Error("DEPLOYER (path to funding keypair) is not set.");
   const budgetLamports = solFromEnv("FUNDING_BUDGET_SOL", 1.5);
   const floorLamports = solFromEnv("FUNDING_FLOOR_SOL", 0.5);
+  const watchdogMs = minutesFromEnv("WATCHDOG_MINUTES", 15);
 
-  const conn = new Connection(rpc, "confirmed");
+  const conn = new Connection(rpc, {
+    commitment: "confirmed",
+    fetch: (input, init) => fetch(input, {
+      ...init,
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, AbortSignal.timeout(RPC_TIMEOUT_MS)])
+        : AbortSignal.timeout(RPC_TIMEOUT_MS),
+    }),
+  });
+  const send = (tx: Transaction, signers: Keypair[]) => withTimeout(
+    sendAndConfirmTransaction(conn, tx, signers, { commitment: "confirmed" }),
+    SEND_TIMEOUT_MS, "Send and confirm");
 
   // Refuse mainnet. This harness mints and spends; there is no undo.
   const genesis = await conn.getGenesisHash();
@@ -284,6 +335,41 @@ async function main() {
   const log = fs.createWriteStream(logFile, { flags: "a" });
   const emit = (ev: Record<string, unknown>) =>
     log.write(JSON.stringify({ ts: new Date().toISOString(), ...ev }) + "\n");
+
+  // ── Watchdog ────────────────────────────────────────────────────────────────
+  // With every request and send bounded, the run never goes long without
+  // progress. If it does anyway, something is stuck, and exiting 2 lets a
+  // supervisor restart it into the same schedule. A tick that arrives late
+  // means the process wasn't running at all, so that is logged as a clock_gap
+  // and not counted as a hang. The timer is left referenced on purpose: if the
+  // run ever awaited a promise with nothing behind it, Node would otherwise
+  // drain the event loop and exit 0, which a supervisor reads as a deliberate
+  // stop.
+  let activity = "starting";
+  let lastProgress = Date.now();
+  const progress = (what?: string) => {
+    lastProgress = Date.now();
+    if (what) activity = what;
+  };
+  let lastTick = Date.now();
+  let watchdogFired = false;
+  const watchdog = setInterval(() => {
+    if (watchdogFired) return; // exiting; the log may already be closed
+    const now = Date.now();
+    const late = now - lastTick - WATCHDOG_TICK_MS;
+    lastTick = now;
+    if (late > CLOCK_GAP_MS) {
+      emit({ event: "clock_gap", seconds: Math.round(late / 1000), activity });
+      console.log(`\n  The process didn't run for ${duration(late)}: the host slept, or the process was stopped.`);
+      lastProgress = now;
+    } else if (now - lastProgress > watchdogMs) {
+      watchdogFired = true;
+      emit({ event: "watchdog", seconds: Math.round((now - lastProgress) / 1000), activity });
+      console.error(`\nWatchdog: no progress for ${duration(now - lastProgress)} while ${activity}. Exiting 2.`);
+      setTimeout(() => process.exit(2), 5_000).unref();
+      log.end(() => process.exit(2));
+    }
+  }, WATCHDOG_TICK_MS);
 
   const deployer = loadKeypair(deployerFile);
   const provider = new AnchorProvider(conn, new Wallet(deployer), { commitment: "confirmed" });
@@ -369,6 +455,7 @@ async function main() {
    * funding wallet below FUNDING_FLOOR_SOL.
    */
   async function fund(to: PublicKey, lamports: number, why: "setup" | "topup"): Promise<boolean> {
+    progress("funding a wallet");
     const funderBalance = await conn.getBalance(deployer.publicKey);
     let refusal = "";
     if (sched.fundedLamports + lamports > budgetLamports) {
@@ -395,7 +482,7 @@ async function main() {
     const tx = new Transaction().add(SystemProgram.transfer({
       fromPubkey: deployer.publicKey, toPubkey: to, lamports,
     }));
-    const sig = await sendAndConfirmTransaction(conn, tx, [deployer], { commitment: "confirmed" });
+    const sig = await send(tx, [deployer]);
     emit({ event: "fund", why, wallet: to.toBase58(), lamports, sig, fundedLamports: sched.fundedLamports });
     return true;
   }
@@ -413,6 +500,7 @@ async function main() {
 
   // ── Fund + set up each wallet (idempotent) ──────────────────────────────────
   for (const [i, kp] of miners.entries()) {
+    progress("setting up wallets");
     const bal = await conn.getBalance(kp.publicKey);
     if (bal < SETUP_LAMPORTS / 2 && !(await fund(kp.publicKey, SETUP_LAMPORTS, "setup"))) break;
 
@@ -435,7 +523,7 @@ async function main() {
         tx.add(await program.methods.depositBond()
           .accounts({ authority: kp.publicKey, rentPayer: kp.publicKey }).instruction());
       }
-      await sendAndConfirmTransaction(conn, tx, [kp], { commitment: "confirmed" });
+      await send(tx, [kp]);
       emit({ event: "wallet_setup", wallet: kp.publicKey.toBase58(), ata: needAta, bond: needBond });
     }
     process.stdout.write(`\rPrepared ${i + 1}/${miners.length} wallets`);
@@ -443,8 +531,10 @@ async function main() {
   console.log("\n");
 
   // ── Mining loop ─────────────────────────────────────────────────────────────
-  const sleepUntil = async (t: number) => {
+  const sleepUntil = async (t: number, what = "waiting for the next slot") => {
+    activity = what;
     while (!stopping && Date.now() < t) {
+      progress();
       await new Promise((r) => setTimeout(r, Math.min(1_000, t - Date.now())));
     }
   };
@@ -468,6 +558,7 @@ async function main() {
       // Top the wallet up before it runs dry.
       const since = claimsSinceCheck.get(key);
       if (since === undefined || since >= BALANCE_CHECK_EVERY) {
+        progress("checking a wallet's balance");
         const balance = await conn.getBalance(kp.publicKey);
         if (balance < TOPUP_BELOW && !(await fund(kp.publicKey, TOPUP_TO - balance, "topup"))) {
           return "terminal";
@@ -476,6 +567,7 @@ async function main() {
       }
       claimsSinceCheck.set(key, claimsSinceCheck.get(key)! + 1);
 
+      progress("reading the program's state");
       let state = await fetchGlobalState(globalStatePDA);
       for (let i = 0; i < 10 && Buffer.from(state.lastHash).toString("hex") === consumedHash; i++) {
         await new Promise((r) => setTimeout(r, 400));
@@ -492,8 +584,10 @@ async function main() {
         lastSeenDifficulty = difficulty;
       }
 
+      progress("mining");
       const t0 = Date.now();
-      const { nonce, attempts } = await mineNonce(state.lastHash as number[], kp.publicKey, difficulty);
+      const { nonce, attempts } = await mineNonce(
+        state.lastHash as number[], kp.publicKey, difficulty, () => progress());
       const mineMs = Date.now() - t0;
       const ata = getAssociatedTokenAddressSync(mintPDA, kp.publicKey);
       const ix = await program.methods.claim(nonce, new BN(0))
@@ -503,8 +597,8 @@ async function main() {
           feePayerTokenAccount: ata,
           authority: kp.publicKey,
         }).instruction();
-      const sig = await sendAndConfirmTransaction(
-        conn, new Transaction().add(ix), [kp], { commitment: "confirmed" });
+      progress("sending a claim");
+      const sig = await send(new Transaction().add(ix), [kp]);
       nextEligible.set(key, Date.now() + walletGapMs);
       consumedHash = Buffer.from(state.lastHash).toString("hex");
       emit({
@@ -592,6 +686,7 @@ async function main() {
       if (stopping) break;
 
       const outcome = await attemptClaim(kp);
+      progress();
       tally[outcome]++;
 
       // A run of failures the program didn't cause is the RPC node or devnet
@@ -607,7 +702,7 @@ async function main() {
         if (failuresInARow >= OUTAGE_AFTER) {
           const pause = Math.min(OUTAGE_MAX_PAUSE_MS,
             OUTAGE_PAUSE_MS * 2 ** Math.min(10, failuresInARow - OUTAGE_AFTER));
-          await sleepUntil(Math.min(Date.now() + pause, until));
+          await sleepUntil(Math.min(Date.now() + pause, until), "pausing for an outage");
         }
       } else if (outcome !== "terminal") {
         if (outageSince) {
@@ -638,6 +733,7 @@ async function main() {
     stop("The schedule is over.");
     emit({ event: "schedule_end", startedAt: sched.startedAt, fundedLamports: sched.fundedLamports });
   }
+  clearInterval(watchdog);
   emit({ event: "run_end", reason: stopReason });
   await new Promise<void>((r) => log.end(() => r()));
   console.log(`\n${stopReason}\nEvent log: ${logFile}`);

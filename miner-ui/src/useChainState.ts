@@ -28,6 +28,14 @@ export function deriveBondPDA(authority: PublicKey): PublicKey {
   )[0];
 }
 
+/** The wallet's UserState, which its first claim opens (`init_if_needed`). */
+export function deriveUserStatePDA(authority: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("user_state"), authority.toBuffer()],
+    PROGRAM_ID
+  )[0];
+}
+
 export interface ChainState {
   difficulty: bigint;          // u64 from chain — values can exceed 2^53
   launchTime: bigint;          // i64 unix seconds — emission epoch anchor

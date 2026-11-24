@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { PublicKey } from "@solana/web3.js";
-import { useChainState, SUPPLY_CAP, MINT_PDA } from "./useChainState";
+import { useChainState, SUPPLY_CAP, MINT_PDA, deriveBondPDA, deriveUserStatePDA } from "./useChainState";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useMiner } from "./useMiner";
 import ClaimReveal from "./ClaimReveal";
 import HelpTab from "./HelpTab";
@@ -284,21 +285,51 @@ export default function App() {
     return () => { live = false; };
   }, [connection]);
 
+  // Which of the active wallet's three mining accounts exist: its TERM ATA, its
+  // bond and its UserState. A claim pays rent for whichever are missing, so a
+  // wallet that has mined before needs only the fee. Unknown (null) counts as
+  // none existing. Checked every 10s until all three exist.
+  const [setup, setSetup] = useState<{ ata: boolean; bond: boolean; userState: boolean } | null>(null);
+  useEffect(() => {
+    setSetup(null);
+    const pk = activeWallet.publicKey;
+    if (!connection || !pk) return;
+    let done = false;
+    const id = setInterval(check, 10_000);
+    async function check() {
+      if (done) return;
+      const infos = await connection.getMultipleAccountsInfo([
+        getAssociatedTokenAddressSync(MINT_PDA, pk!), deriveBondPDA(pk!), deriveUserStatePDA(pk!),
+      ]).catch(() => null);
+      if (done || !infos) return;
+      const s = { ata: !!infos[0], bond: !!infos[1], userState: !!infos[2] };
+      setSetup(s);
+      if (s.ata && s.bond && s.userState) { done = true; clearInterval(id); }
+    }
+    check();
+    return () => { done = true; clearInterval(id); };
+  }, [connection, activeWallet.publicKey?.toBase58()]);
+
   // Routing preference — self-fund FIRST when the wallet can pay its own
   // way. Each self-funded claim costs ~5K lamports; through a relayer it
   // costs the relayer ~5K SOL AND the user a 0.5 TERM tip (under bootstrap
   // mode). Self-fund is strictly better when feasible. Relayer routing is
   // reserved as a SUBSIDY/fallback for fresh wallets without SOL.
   //
-  // Cold first-claim cost (self-fund — the wallet pays all rent + fee): one tx
-  // opens the user's TERM ATA (165B), bond (57B) and UserState (24B) and pays a
-  // ~5K fee, and the wallet must END with its own rent-exempt minimum or the tx
-  // is rejected (InsufficientFundsForRent). That is about 3.86M lamports on
+  // What a self-funded claim costs: rent for whichever of the user's TERM ATA
+  // (165B), bond (57B) and UserState (24B) it has to open, and a ~5K fee; and the
+  // wallet must END with its own rent-exempt minimum or the tx is rejected
+  // (InsufficientFundsForRent). A cold first claim is about 3.86M lamports on
   // devnet since the November 2026 rent cut, and 5.28M at the old rate. The gate
   // MUST cover all of it, or a wallet passes here and then fails on-chain at
-  // first claim (this stranded a real wallet). Repeat claims cost only the ~5K
-  // fee. 0.2M of headroom for fee variance.
-  const SELF_FUND_MIN_LAMPORTS = rent.tokenAccount + rent.bond + rent.userState + 5_000 + rent.wallet + 200_000;
+  // first claim (this stranded a real wallet). Once the accounts exist a claim
+  // costs only the fee, so the gate drops to fee + minimum: it used to stay at
+  // the cold figure, which sent wallets with SOL for hundreds of claims to the
+  // relayer. Headroom for fee variance: 0.2M while accounts are still to open,
+  // 25K (five claims' fees) after.
+  const setupRent = (setup?.ata ? 0 : rent.tokenAccount) + (setup?.bond ? 0 : rent.bond)
+    + (setup?.userState ? 0 : rent.userState);
+  const SELF_FUND_MIN_LAMPORTS = setupRent + 5_000 + rent.wallet + (setupRent > 0 ? 200_000 : 25_000);
   const burnerSolReady = isBurner && burnerBalance !== null && burnerBalance >= SELF_FUND_MIN_LAMPORTS;
   // External wallets (Phantom) must actually have SOL to self-fund — connecting
   // without funds is not enough. The previous logic let any connected Phantom
@@ -391,7 +422,10 @@ export default function App() {
     if (!isBurner || !burner.publicKey || burnerBalance === null) {
       rawStart(); return;
     }
-    if (burnerBalance >= BURNER_TOPUP_THRESHOLD) { rawStart(); return; }
+    // A burner that can already pay its own way needs no top-up. That includes
+    // one that has mined before and holds less than the threshold: it may have
+    // spent its one top-up already, and asking again would fail and block Start.
+    if (burnerBalance >= BURNER_TOPUP_THRESHOLD || burnerSolReady) { rawStart(); return; }
     // In shared/local mode the relayer signs as both fee_payer and rent_payer,
     // so the burner needs zero SOL. Skip the topup — otherwise we'd burn the
     // per-wallet quota slot to deliver SOL that just sits unused. If the user
@@ -473,6 +507,10 @@ export default function App() {
   function handleGenerateBurner() {
     burner.generate();
     refreshWallets();
+    // A new burner holds no SOL, so a remembered SELF-FUND route could only leave
+    // it at "needs topup" with Start disabled, the one-click start included. Mine
+    // it on AUTO, which routes a wallet without SOL through the relayer.
+    if (modePreference === "self-fund") setModePreference("auto");
   }
 
   function handleImportBurner() {
@@ -790,6 +828,25 @@ export default function App() {
           <span className="status-pill error">PROGRAM PAUSED</span>
         )}
       </div>
+      {/* Why Start is disabled for a burner that can't pay its own fees. Said
+          here because the ROUTING panel, which shows the mode, starts collapsed
+          on phones. A SELF-FUND route holds a burner here without waiting for
+          the relayer probe; AUTO reaches this state only once the probe has
+          found no relayer. */}
+      {!mining && !autoStartPending && isBurner && miningMode === "self-fund-needs-topup" && (
+        modePreference === "self-fund" ? (
+          <div className="log-line warn prose">
+            ROUTE is set to SELF-FUND, and this burner doesn't hold enough SOL to pay its own fees.
+            Use AUTO to mine through the relayer, or top up the burner.{" "}
+            <button className="btn" onClick={() => setModePreference("auto")}>[ USE AUTO ]</button>
+          </div>
+        ) : (
+          <div className="log-line warn prose">
+            No relayer can pay this burner's fees right now, so it can't mine yet. Try again in a few
+            minutes, or send the burner a little SOL.
+          </div>
+        )
+      )}
 
       {/* Routing config (ROUTE / RELAYERS / MODE / tip) — collapsible so it
           doesn't crowd the CTA or small screens; default collapsed on mobile. */}

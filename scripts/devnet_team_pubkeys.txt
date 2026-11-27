@@ -13,3 +13,9 @@ g63YkVg3dwAqryynu7jNuiGXddPABnbNwEjkGVMdGqF
 # Burners from testing the site's one-click Start, 2026-11-23 (the live site, then the fix)
 HzyD3AhfNvAi5Su7ZtZMoPJYD7z4kKbevNBT5MxWME9M
 A2RrLwumU2S2GG5LfH6ggPhpGkvnLW1mmLMBFbpapgQa
+
+# The operator's own browser burner, mining through the relayer since 2026-06-22
+9pukiciV9m4BGgkVBQqnFovgaM6SwLfTDysghD2V47y6
+
+# A burner from testing the miner's retries, 2026-11-27
+Ao5QieR3rMpnhymzs9F2gizVZNUXjG3LUehzvvQinZXN

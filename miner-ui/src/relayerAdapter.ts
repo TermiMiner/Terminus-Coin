@@ -102,6 +102,7 @@ export function sharedRelayerAdapter(pubkey: PublicKey, baseUrl = ""): Broadcast
         // "claim rejected at simulation" carries e.g. RateLimitExceeded in its
         // logs; without them it falls through to the generic on-chain message.
         const e = new Error(data?.error ?? `relay failed (HTTP ${res.status})`);
+        (e as any).status = res.status; // useMiner backs off longer on the relayer's own limits (429)
         if (Array.isArray(data?.logs)) (e as any).logs = data.logs;
         if (typeof data?.detail === "string") (e as any).detail = data.detail;
         throw e;

@@ -78,6 +78,14 @@ function backoffForError(err: any): number {
   return 0;
 }
 
+// Contention, not a fault: another claim landed first, or the blockhash aged
+// out. The next round usually clears it, so the first retries are immediate
+// (see contentionRef in the claim's catch).
+function isContention(err: any): boolean {
+  const all = `${err?.message ?? ""} ${(err?.logs ?? []).join(" ")} ${err?.detail ?? ""}`;
+  return /InvalidProofOfWork|blockhash not found/i.test(all);
+}
+
 export function useMiner(
   connection: Connection | null,
   wallet: MinerWallet,
@@ -98,6 +106,9 @@ export function useMiner(
   const shouldRestartRef = useRef(false);
   const lastClaimAtRef = useRef(0); // ms timestamp of the last landed claim — drives the cooldown gate
   const startRef = useRef<() => void>(() => {});
+  const chainReadFailuresRef = useRef(0); // failed chain-state reads in a row; sets the retry backoff
+  const claimFailuresRef = useRef(0);     // failed claims in a row, contention aside; sets the claim backoff
+  const contentionRef = useRef(0);        // stale claims in a row; slows retries once the RPC looks behind
 
   function appendLog(level: LogEntry["level"], text: string) {
     setLogs((prev) => {
@@ -139,9 +150,18 @@ export function useMiner(
       let gs: any;
       try {
         gs = await (program.account as any).globalState.fetch(GLOBAL_STATE_PDA);
+        chainReadFailuresRef.current = 0;
       } catch (err: any) {
-        appendLog("error", `[${ts()}] Failed to fetch chain state: ${err.message}`);
-        setStatus("error");
+        // Nearly always the RPC node hiccuping: a 429, a timeout, a dropped
+        // connection. Wait and read again instead of ending the session. This
+        // used to stop the miner for good on one failed read, which every
+        // round risks, so long sessions ended on their own.
+        if (!shouldRestartRef.current) return; // stopped meanwhile
+        const failures = ++chainReadFailuresRef.current;
+        const waitMs = Math.min(60_000, 5_000 * 2 ** Math.min(failures - 1, 4));
+        appendLog("warn", `[${ts()}] Couldn't read the chain state (${err.message}). Retrying in ${Math.round(waitMs / 1000)}s…`);
+        setStatus("mining");
+        setTimeout(() => { if (shouldRestartRef.current) startRef.current(); }, waitMs);
         return;
       }
 
@@ -366,6 +386,8 @@ export function useMiner(
           emit({ kind: "claimed", bonusBits, termGross: Number(expectedTerm) });
           lastClaimAtRef.current = Date.now(); // arm the cooldown gate for the next round
           backoffMs = 0;
+          claimFailuresRef.current = 0;
+          contentionRef.current = 0;
         } catch (err: any) {
           const friendly = friendlyClaimError(err);
           // Tell the user what they "would have" won so a missed jackpot feels like a story, not a silent loss.
@@ -378,6 +400,23 @@ export function useMiner(
               appendLog("error", `  ${l}`);
           }
           backoffMs = backoffForError(err);
+          if (isContention(err)) {
+            // A retry at once usually clears it. Several in a row mean the RPC
+            // node is behind the chain, so slow down rather than spend the
+            // relayer's per-IP allowance in a burst: 1s, doubling to 10s.
+            const c = ++contentionRef.current;
+            if (c > 2) backoffMs = Math.max(backoffMs, Math.min(10_000, 1_000 * 2 ** Math.min(c - 3, 4)));
+          } else {
+            // Anything else, a relayer refusing or failing above all, rarely
+            // clears within a second, and retrying at once used to send claims
+            // in a tight loop: it floods a struggling relayer and spends its
+            // per-IP hourly allowance, which then blocks mining for up to an
+            // hour. Back off, doubling from 2s to a minute; the relayer's own
+            // limits (HTTP 429) wait a minute.
+            const n = ++claimFailuresRef.current;
+            const doubling = Math.min(60_000, 2_000 * 2 ** Math.min(n - 1, 5));
+            backoffMs = Math.max(backoffMs, doubling, err?.status === 429 ? 60_000 : 0);
+          }
         }
 
         if (shouldRestartRef.current) {

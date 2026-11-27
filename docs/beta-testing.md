@@ -89,6 +89,7 @@ Reading this list first will save you a report.
 - **Rewards differ from claim to claim.** The base reward is 3.4 TERM, and luck multiplies each claim by 1, 2, 4 and so on up to 256. Half of all claims get the base amount. About one in 256 gets the full 256×.
 - **You receive a little less than the "gross" figure in the log.** 3% of every reward is set aside for stakers, and between 0.25% and 5% is burned (0.25% while difficulty is low). When a relayer pays your fees, its tip comes out too.
 - **`First mine — also depositing 0.001 SOL bond.`** Every wallet locks a small one-time bond, about 0.001 SOL, with its first claim. When you mine without SOL, the relayer pays it.
+- **`Couldn't read the chain state … Retrying` and `Backing off …s before next round`.** The network or the relayer had a hiccup. The miner waits and carries on by itself, so leave it running. It is a problem only if it keeps repeating for more than a few minutes.
 - **`TAB PAUSED`.** Browsers slow down or stop pages that are in the background, and phones stop them when the screen locks. Mining picks up when you return to the tab.
 - **Difficulty moves.** The `Difficulty` figure under `STATS` rises when claims across the whole network arrive faster than one every six seconds, and falls when they arrive slower. During load tests it climbs, and each round takes your browser longer.
 
